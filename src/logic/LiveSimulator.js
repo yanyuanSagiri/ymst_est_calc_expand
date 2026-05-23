@@ -104,7 +104,7 @@ export default class LiveSimulator {
     this.starActScoreIndex = [];
     this.scoreTimeline = [];
   }
-  runSimulation(node) {
+  prepare(node) {
     this.applyPendingActions();
     if (this.senseBox && this.senseBox.children.length >= 5) {
       Array.from(
@@ -187,108 +187,109 @@ export default class LiveSimulator {
       ]),
     );
 
-    let oddRow = false;
-    let saLastTiming = -1;
-    this.senseTiming.forEach((timing) => {
-      this.currentTiming = timing.TimingSecond;
-      this.currentSenseType = "none";
-      this.purgeExpiredBuff(timing.TimingSecond);
-      this.phase = ConstText.get("LIVE_PHASE_SENSE").replace(
+    this._oddRow = false;
+    this._saLastTiming = -1;
+  }
+
+  processTiming(timing, node) {
+    this.currentTiming = timing.TimingSecond;
+    this.currentSenseType = "none";
+    this.purgeExpiredBuff(timing.TimingSecond);
+    this.phase = ConstText.get("LIVE_PHASE_SENSE").replace(
+      "{time}",
+      timing.TimingSecond,
+    );
+    this.phaseLog = [];
+    let timelineNode = null;
+    if (
+      this.senseBox &&
+      this.senseBox.children[timing.Position - 1] &&
+      this.senseBox.children[timing.Position - 1].children[1]
+    ) {
+      timelineNode =
+        this.senseBox.children[timing.Position - 1].children[1].children[
+          this.senseTiming
+            .filter((i) => i.Position === timing.Position)
+            .indexOf(timing)
+        ];
+    }
+    if (timelineNode) {
+      timelineNode.classList.remove("failed");
+      timelineNode.dataset.senseType = "";
+    }
+    if (!this.trySense(timing, timelineNode)) {
+      this.phase = ConstText.get("LIVE_PHASE_SENSE_FAILED").replace(
         "{time}",
         timing.TimingSecond,
       );
-      this.phaseLog = [];
-      let timelineNode = null;
-      if (
-        this.senseBox &&
-        this.senseBox.children[timing.Position - 1] &&
-        this.senseBox.children[timing.Position - 1].children[1]
-      ) {
-        timelineNode =
-          this.senseBox.children[timing.Position - 1].children[1].children[
-            this.senseTiming
-              .filter((i) => i.Position === timing.Position)
-              .indexOf(timing)
-          ];
-      }
+      this.resetCurrentLights();
+
       if (timelineNode) {
-        timelineNode.classList.remove("failed");
-        timelineNode.dataset.senseType = "";
+        timelineNode.classList.add("failed");
       }
-      if (!this.trySense(timing, timelineNode)) {
-        this.phase = ConstText.get("LIVE_PHASE_SENSE_FAILED").replace(
-          "{time}",
-          timing.TimingSecond,
-        );
-        this.resetCurrentLights();
+    }
 
-        if (timelineNode) {
-          timelineNode.classList.add("failed");
-        }
-      }
-
-      lights = this.getHoldingLightsElement();
-      if (this.tryStarAct()) {
-        this.phase = ConstText.get("LIVE_PHASE_SENSE_WITH_STARACT").replace(
-          "{time}",
-          timing.TimingSecond,
-        );
-        this.resetCurrentLights();
-        saLastTiming = timing.TimingSecond;
-      }
-      node?.appendChild(
-        _(
-          "details",
-          { className: "live-log-phase" + (oddRow ? " odd-row" : "") },
-          [
-            _(
-              "summary",
-              {
-                className: "sense-star",
-                "data-sense-type": this.currentSenseType,
-              },
-              [
-                _("text", this.phase),
-                _("br"),
-                lights,
-                this.getPGaugeProgressElement(),
-                this.getLifeGaugeElement(),
-              ],
-            ),
-            _("table", {}, [
-              _("tr", { style: { verticalAlign: "top" } }, [
-                _("td", {}, [
-                  _("div", {
-                    className: "spriteatlas-characters",
-                    "data-id":
-                      this.calc.members[timing.Position - 1].cardIconId,
-                  }),
-                ]),
-                _("td", {}, [_("text", this.phaseLog.join("\n"))]),
-              ]),
-            ]),
-          ],
-        ),
+    const lights = this.getHoldingLightsElement();
+    if (this.tryStarAct()) {
+      this.phase = ConstText.get("LIVE_PHASE_SENSE_WITH_STARACT").replace(
+        "{time}",
+        timing.TimingSecond,
       );
+      this.resetCurrentLights();
+      this._saLastTiming = timing.TimingSecond;
+    }
+    node?.appendChild(
+      _(
+        "details",
+        { className: "live-log-phase" + (this._oddRow ? " odd-row" : "") },
+        [
+          _(
+            "summary",
+            {
+              className: "sense-star",
+              "data-sense-type": this.currentSenseType,
+            },
+            [
+              _("text", this.phase),
+              _("br"),
+              lights,
+              this.getPGaugeProgressElement(),
+              this.getLifeGaugeElement(),
+            ],
+          ),
+          _("table", {}, [
+            _("tr", { style: { verticalAlign: "top" } }, [
+              _("td", {}, [
+                _("div", {
+                  className: "spriteatlas-characters",
+                  "data-id": this.calc.members[timing.Position - 1].cardIconId,
+                }),
+              ]),
+              _("td", {}, [_("text", this.phaseLog.join("\n"))]),
+            ]),
+          ]),
+        ],
+      ),
+    );
 
-      this.scoreTimeline.push({
-        time: timing.TimingSecond,
-        position: timing.Position,
-        cumulativeSenseScore: this.calc.result.senseScore.reduce(
-          (acc, cur) => acc + cur,
-          0,
-        ),
-        cumulativeStarActScore: this.calc.result.starActScore.reduce(
-          (acc, cur) => acc + cur,
-          0,
-        ),
-        starActCount: this.calc.result.starActCount,
-      });
-
-      oddRow = !oddRow;
+    this.scoreTimeline.push({
+      time: timing.TimingSecond,
+      position: timing.Position,
+      cumulativeSenseScore: this.calc.result.senseScore.reduce(
+        (acc, cur) => acc + cur,
+        0,
+      ),
+      cumulativeStarActScore: this.calc.result.starActScore.reduce(
+        (acc, cur) => acc + cur,
+        0,
+      ),
+      starActCount: this.calc.result.starActCount,
     });
 
-    // sa推迟
+    this._oddRow = !this._oddRow;
+  }
+
+  finalize(node) {
     if (
       this.starActScoreIndex.length &&
       this.calc.result.starActScore[this.starActScoreIndex[0]] === 0
@@ -304,8 +305,7 @@ export default class LiveSimulator {
         }
         LiveSimulator.saDelayLastTiming = null;
       } else if (this.starActScoreIndex.length > 1) {
-        // 重新模拟
-        LiveSimulator.saDelayLastTiming = saLastTiming;
+        LiveSimulator.saDelayLastTiming = this._saLastTiming;
         const calc = new ScoreCalculator(
           this.calc.members,
           this.calc.posters,
@@ -316,6 +316,14 @@ export default class LiveSimulator {
         return true;
       }
     }
+  }
+
+  runSimulation(node) {
+    this.prepare(node);
+    for (const timing of this.senseTiming) {
+      this.processTiming(timing, node);
+    }
+    return this.finalize(node);
   }
   getScoreRightNow() {
     const localScore =

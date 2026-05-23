@@ -399,6 +399,11 @@ export default class ScoreCalculator {
 
     this.liveSim.baseScore = baseScore[3];
 
+    if (this.extra.skipSimulation) {
+      this.liveSim.setStarActRequirements(leader.staract.actualRequirements);
+      return;
+    }
+
     node?.appendChild(
       _("div", {}, [
         _("div", {

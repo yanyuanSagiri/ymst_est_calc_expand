@@ -8,13 +8,32 @@ import removeAllChilds from "../removeAllChilds";
 export default class TripleCastManager {
   constructor() {
     this.axes = [
-      { notationId: 0, party: new Party() },
-      { notationId: 0, party: new Party() },
-      { notationId: 0, party: new Party() },
+      {
+        notationId: 0,
+        party: new Party(),
+        parties: [],
+        currentPartyIdx: 0,
+        selectedPartyKey: "",
+      },
+      {
+        notationId: 0,
+        party: new Party(),
+        parties: [],
+        currentPartyIdx: 0,
+        selectedPartyKey: "",
+      },
+      {
+        notationId: 0,
+        party: new Party(),
+        parties: [],
+        currentPartyIdx: 0,
+        selectedPartyKey: "",
+      },
     ];
     this.axes[0].party.name = ConstText.get("PARTY_DEFAULT_NAME") + " 1";
     this.axes[1].party.name = ConstText.get("PARTY_DEFAULT_NAME") + " 2";
     this.axes[2].party.name = ConstText.get("PARTY_DEFAULT_NAME") + " 3";
+    this.axes.forEach((axis) => axis.parties.push(axis.party));
     this.currentPicking = null;
     this.swappables = [];
   }
@@ -33,6 +52,7 @@ export default class TripleCastManager {
 
     this.notationSelects = [];
     this.senseBoxes = [];
+    this.partySelects = [];
     this.partyNameInputs = [];
     this.leaderSelections = [];
     this.charaSlots = [];
@@ -47,6 +67,30 @@ export default class TripleCastManager {
       _("div", { style: { marginBottom: "8px" } }, [
         (this.highEndFilter = _("input", { type: "checkbox" })),
         _("text", "查询列表仅显示：四星角色/SSR海报/Lv10饰品"),
+        _("span", { style: { margin: "0 8px" } }),
+        _(
+          "button",
+          {
+            event: {
+              click: () => {
+                for (let i = 0; i < 3; i++) {
+                  const party = this.axes[i].party;
+                  party.characters = Array(5).fill(null);
+                  party.posters = Array(5).fill(null);
+                  party.accessories = Array(5).fill(null);
+                  party.leader = null;
+                }
+                this.update();
+                try {
+                  root.update({ party: true });
+                } catch (err) {
+                  console.error(err);
+                }
+              },
+            },
+          },
+          [_("text", "清空全部编队")],
+        ),
       ]),
     );
 
@@ -64,7 +108,11 @@ export default class TripleCastManager {
           change: (e) => {
             this.axes[axisIdx].notationId = e.target.value | 0;
             this.renderAxisSenseNote(axisIdx);
-            root.update({ party: true });
+            try {
+              root.update({ party: true });
+            } catch (err) {
+              console.error(err);
+            }
           },
         },
       });
@@ -131,6 +179,27 @@ export default class TripleCastManager {
       const calcResult = _("div");
       this.calcResults.push(calcResult);
 
+      const partySelect = _("select", {
+        event: {
+          change: (e) => {
+            const axis = this.axes[axisIdx];
+            const val = e.target.value;
+            if (!val) return;
+            axis.selectedPartyKey = val;
+            if (val.startsWith("pm_")) {
+              const pmIdx = parseInt(val.slice(3));
+              const pmParty = root.appState.partyManager.parties[pmIdx];
+              if (pmParty) {
+                axis.party = pmParty;
+              }
+            }
+            this.changeParty(axisIdx);
+            root.update({ party: true });
+          },
+        },
+      });
+      this.partySelects.push(partySelect);
+
       axisSection.appendChild(
         _("div", { style: { marginBottom: "4px" } }, [
           _("span", {}, [
@@ -143,12 +212,9 @@ export default class TripleCastManager {
           notationSelect,
         ]),
       );
-      // axisSection.appendChild(
-      //   _("div", { style: { marginBottom: "4px" } }, [
-      //     _("span", { "data-text-key": "PARTY_LABEL" }),
-      //     partyNameInput,
-      //   ]),
-      // );
+      axisSection.appendChild(
+        _("div", { style: { marginBottom: "4px" } }, [partySelect]),
+      );
       axisSection.appendChild(senseBox);
       axisSection.appendChild(slotsContainer);
       axisSection.appendChild(calcResult);
@@ -247,6 +313,11 @@ export default class TripleCastManager {
         select.value = this.axes[idx].notationId;
       }
     });
+    for (let i = 0; i < 3; i++) {
+      this.fillPartySelect(i);
+      if (this.partyNameInputs[i])
+        this.partyNameInputs[i].value = this.axes[i].party.name;
+    }
   }
 
   renderAxisSenseNote(axisIdx) {
@@ -307,7 +378,71 @@ export default class TripleCastManager {
     accessoryIcons.forEach((icon, idx) => {
       icon.dataset.id = party.accessories[idx] ? party.accessories[idx].id : "";
     });
-    // this.partyNameInputs[axisIdx].value = party.name;
+  }
+
+  fillPartySelect(axisIdx) {
+    const select = this.partySelects[axisIdx];
+    if (!select) return;
+    removeAllChilds(select);
+    select.appendChild(
+      _("option", { value: "", disabled: true }, [_("text", "请选择")]),
+    );
+    const pm = root.appState?.partyManager;
+    let autoDefault = "";
+    const targetName = `(TripleCast)グループ${axisIdx + 1}`;
+    if (pm) {
+      pm.parties.forEach((party, idx) => {
+        if (!party.name.includes("(TripleCast)")) return;
+        const val = `pm_${idx}`;
+        select.appendChild(
+          _("option", { value: val }, [_("text", party.name)]),
+        );
+        if (party.name === targetName && !autoDefault) autoDefault = val;
+      });
+    }
+    const axis = this.axes[axisIdx];
+    const cached = axis.selectedPartyKey;
+    const chosen =
+      cached && select.querySelector(`option[value="${cached}"]`)
+        ? cached
+        : autoDefault;
+    select.value = chosen || "";
+    if (chosen) {
+      const pmIdx = parseInt(chosen.slice(3));
+      const pmParty = pm?.parties[pmIdx];
+      if (pmParty) {
+        axis.party = pmParty;
+      }
+    }
+  }
+
+  addParty(axisIdx) {
+    const axis = this.axes[axisIdx];
+    const clone = Party.fromJSON(axis.party.toJSON());
+    clone.name =
+      ConstText.get("PARTY_DEFAULT_NAME") +
+      ` ${axisIdx + 1}-${axis.parties.length + 1}`;
+    axis.parties.push(clone);
+    axis.currentPartyIdx = axis.parties.length - 1;
+    axis.party = clone;
+    this.fillPartySelect(axisIdx);
+    this.changeParty(axisIdx);
+    root.update({ party: true });
+  }
+
+  removeParty(axisIdx) {
+    const axis = this.axes[axisIdx];
+    if (axis.parties.length === 1)
+      return alert(ConstText.get("PARTY_DELETE_LAST"));
+    if (!confirm(ConstText.get("PARTY_DELETE_CONFIRM"))) return;
+    axis.parties.splice(axis.currentPartyIdx, 1);
+    if (axis.currentPartyIdx >= axis.parties.length) {
+      axis.currentPartyIdx = axis.parties.length - 1;
+    }
+    axis.party = axis.parties[axis.currentPartyIdx];
+    this.fillPartySelect(axisIdx);
+    this.changeParty(axisIdx);
+    root.update({ party: true });
   }
 
   update() {
@@ -468,6 +603,10 @@ export default class TripleCastManager {
   }
 
   pickCharacter(e, axisIdx, idx) {
+    console.log(
+      "pickCharacter called, characters:",
+      root.appState.characters.length,
+    );
     if (root.appState.characters.length === 0) return;
     this.currentPicking = { type: "chara", axisIdx, slotIdx: idx };
     this.createPickingOverlay();
@@ -599,8 +738,9 @@ export default class TripleCastManager {
 
   toJSON() {
     return [
-      this.axes.map((axis) => axis.party.toJSON()),
+      this.axes.map((axis) => axis.parties.map((p) => p.toJSON())),
       this.axes.map((axis) => axis.notationId),
+      this.axes.map((axis) => axis.selectedPartyKey || ""),
     ];
   }
 
@@ -611,14 +751,29 @@ export default class TripleCastManager {
       const notationIds = data[1];
       if (Array.isArray(partiesData)) {
         for (let i = 0; i < Math.min(3, partiesData.length); i++) {
-          if (partiesData[i]) {
-            manager.axes[i].party = Party.fromJSON(partiesData[i]);
+          if (!partiesData[i]) continue;
+          if (Array.isArray(partiesData[i])) {
+            if (typeof partiesData[i][0] === "string") {
+              manager.axes[i].parties = [Party.fromJSON(partiesData[i])];
+            } else {
+              manager.axes[i].parties = partiesData[i].map((pd) =>
+                Party.fromJSON(pd),
+              );
+            }
           }
+          manager.axes[i].party = manager.axes[i].parties[0];
+          manager.axes[i].currentPartyIdx = 0;
         }
       }
       if (Array.isArray(notationIds)) {
         for (let i = 0; i < Math.min(3, notationIds.length); i++) {
           manager.axes[i].notationId = notationIds[i] | 0;
+        }
+      }
+      const selectedKeys = data[2];
+      if (Array.isArray(selectedKeys)) {
+        for (let i = 0; i < Math.min(3, selectedKeys.length); i++) {
+          manager.axes[i].selectedPartyKey = selectedKeys[i] || "";
         }
       }
     }

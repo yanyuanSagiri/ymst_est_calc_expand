@@ -17,6 +17,7 @@ import PhotoEffectData from "../manager/PhotoEffectData";
 
 import ScoreCalculationType from "./ScoreCalculationType";
 import ScoreCalculator from "./ScoreCalculator";
+import MergedLiveSimulator from "./MergedLiveSimulator";
 import FilterManager from "../manager/FilterManager";
 import SideMenuManager from "../manager/SideMenuManager";
 import GachaViewer, { GACHA_TYPE } from "../manager/GachaViewer";
@@ -1470,22 +1471,28 @@ export default class RootLogic {
           let totalStarActScores = 0;
           let totalStarActCount = 0;
           const axisDetails = [];
-          const calcsPass1 = [];
-          const axisBaseScores = [];
+          const calcs = [];
+          const senseBoxes = [];
 
-          // 第一遍：独立计算每个轴，收集 scoreTimeline
           for (let axisIdx = 0; axisIdx < 3; axisIdx++) {
             const tcm = this.appState.tripleCastManager;
             const party = tcm.getParty(axisIdx);
             const notationId = tcm.getNotationId(axisIdx);
             const resultContainer = tcm.calcResults[axisIdx];
-            if (!notationId) continue;
+            removeAllChilds(resultContainer);
+            if (!notationId) {
+              calcs[axisIdx] = null;
+              senseBoxes[axisIdx] = null;
+              continue;
+            }
             const extra = {
               albumLevel: this.appState.albumLevel,
               albumExtra: this.appState.albumExtra,
               leader: party.leader,
               type: ScoreCalculationType.Normal,
               notationId: notationId,
+              senseBoxRef: tcm.senseBoxes[axisIdx],
+              skipSimulation: true,
             };
             const calc = new ScoreCalculator(
               party.characters,
@@ -1493,226 +1500,131 @@ export default class RootLogic {
               party.accessories,
               extra,
             );
-            calcsPass1[axisIdx] = calc;
             calc.calc(resultContainer);
+            if (!calc.result || !calc.result.baseScore) {
+              calcs[axisIdx] = null;
+              senseBoxes[axisIdx] = null;
+              removeAllChilds(resultContainer);
+              const sb = tcm.senseBoxes[axisIdx];
+              if (sb) {
+                sb.querySelectorAll(".sense-add-light,.staract-line").forEach(
+                  (el) => el.remove(),
+                );
+                sb.querySelectorAll(".failed").forEach((el) =>
+                  el.classList.remove("failed"),
+                );
+                sb.querySelectorAll("[data-sense-type]").forEach(
+                  (el) => (el.dataset.senseType = ""),
+                );
+              }
+              continue;
+            }
+            calcs[axisIdx] = calc;
+            senseBoxes[axisIdx] = tcm.senseBoxes[axisIdx];
             if (calc.result && calc.result.baseScore) {
-              axisBaseScores[axisIdx] = calc.result.baseScore.slice();
               totalBaseScores = totalBaseScores.map(
                 (s, i) => s + (calc.result.baseScore[i] || 0),
               );
             }
           }
 
-          // 构建合并时间线和总分查找表
+          const mergedSim = new MergedLiveSimulator(calcs, senseBoxes);
+          mergedSim.run();
+
           const mergedTimeline = [];
+          const finalTimelines = [];
           for (let axisIdx = 0; axisIdx < 3; axisIdx++) {
-            const calc = calcsPass1[axisIdx];
+            const calc = calcs[axisIdx];
+            const resultContainer =
+              this.appState.tripleCastManager.calcResults[axisIdx];
             if (!calc || !calc.liveSim) continue;
-            calc.liveSim.scoreTimeline.forEach((entry) => {
+            const tl = calc.liveSim.scoreTimeline;
+            finalTimelines[axisIdx] = tl;
+            tl.forEach((entry) => {
               mergedTimeline.push({ ...entry, axisIdx });
             });
+
+            if (calc.result && calc.result.baseScore) {
+              const axisSenseScore = calc.result.senseScore.reduce(
+                (acc, cur) => acc + cur,
+                0,
+              );
+              const axisStarActScore = calc.result.starActScore.reduce(
+                (acc, cur) => acc + cur,
+                0,
+              );
+              const axisTotalScores = calc.result.baseScore.map(
+                (b) => b + axisSenseScore + axisStarActScore,
+              );
+              totalSenseScores += axisSenseScore;
+              totalStarActScores += axisStarActScore;
+              totalStarActCount += calc.result.starActCount || 0;
+              axisDetails[axisIdx] = {
+                baseScore: calc.result.baseScore.slice(),
+                senseScore: axisSenseScore,
+                starActScore: axisStarActScore,
+                starActCount: calc.result.starActCount || 0,
+                totalScore: axisTotalScores,
+              };
+
+              resultContainer.appendChild(
+                _("div", {}, [
+                  _("div", {}, [
+                    _("span", { "data-text-key": "CALC_BASE_SCORE" }),
+                    _("text", calc.result.baseScore.join(" / ")),
+                  ]),
+                  _("div", {}, [
+                    _("span", { "data-text-key": "CALC_SENSE_SCORE" }),
+                    _("text", axisSenseScore),
+                  ]),
+                  _("div", {}, [
+                    _("span", { "data-text-key": "CALC_STARACT_SCORE" }),
+                    _(
+                      "text",
+                      ConstText.get("CALC_RESULT_STARACT")
+                        .replace("{times}", calc.result.starActCount || 0)
+                        .replace("{score}", axisStarActScore),
+                    ),
+                  ]),
+                  _("div", {}, [
+                    _("span", { "data-text-key": "CALC_TOTAL_SCORE" }),
+                    _("text", axisTotalScores.join(" / ")),
+                  ]),
+                ]),
+              );
+            }
           }
           mergedTimeline.sort((a, b) => a.time - b.time);
 
+          const mergedTimelineWithTotal = [];
           const axisCumulative = [
             { sense: 0, starAct: 0, starActCount: 0 },
             { sense: 0, starAct: 0, starActCount: 0 },
             { sense: 0, starAct: 0, starActCount: 0 },
           ];
-          const scoreByTime = [];
           mergedTimeline.forEach((entry) => {
             axisCumulative[entry.axisIdx] = {
               sense: entry.cumulativeSenseScore,
               starAct: entry.cumulativeStarActScore,
               starActCount: entry.starActCount,
             };
-            const totalSenseSum = axisCumulative.reduce(
-              (acc, cur) => acc + cur.sense,
-              0,
-            );
-            const totalStarActSum = axisCumulative.reduce(
-              (acc, cur) => acc + cur.starAct,
-              0,
-            );
-            const totalStarActCountSum = axisCumulative.reduce(
-              (acc, cur) => acc + cur.starActCount,
-              0,
-            );
-            const totaBaseScoreSum = calcsPass1
-              .filter(Boolean)
-              .reduce((acc, cur) => acc + cur.liveSim.baseScore, 0);
-            scoreByTime.push({
-              time: entry.time,
-              axisIdx: entry.axisIdx,
-              totalSense: totalSenseSum,
-              totalStarAct: totalStarActSum,
-              totalStarActCount: totalStarActCountSum,
-              perAxis: axisCumulative.map((a) => ({
-                sense: a.sense,
-                starAct: a.starAct,
-                starActCount: a.starActCount,
-              })),
-              totaBaseScore: totaBaseScoreSum,
-            });
-          });
-
-          // 构建 tripleCastPassData：pass by pass 收敛 provider
-          const tripleCastPassData = {};
-          const buildAxisScoreFn = (passData) => {
-            if (!passData || !passData.baseScore) return () => 0;
-            const baseTotal = passData.baseScore[3];
-            const lastTiming = passData.lastTiming;
-            const timeline = passData.timeline;
-            return (time) => {
-              let sense = 0,
-                starAct = 0;
-              for (let i = timeline.length - 1; i >= 0; i--) {
-                if (timeline[i].time <= time) {
-                  sense = timeline[i].cumulativeSenseScore;
-                  starAct = timeline[i].cumulativeStarActScore;
-                  break;
-                }
-              }
-              return (baseTotal * time) / lastTiming + sense + starAct;
-            };
-          };
-          const makeProvider = (forAxisIdx, passData) => {
-            const fns = [0, 1, 2].map((i) =>
-              i === forAxisIdx ? null : buildAxisScoreFn(passData[i]),
-            );
-            return (time) => {
-              let sum = 0;
-              for (let i = 0; i < 3; i++) {
-                if (i === forAxisIdx || !fns[i]) continue;
-                sum += fns[i](time);
-              }
-              return sum;
-            };
-          };
-
-          [0, 1, 2].forEach((idx) => {
-            const calc = calcsPass1[idx];
-            if (!calc || !calc.liveSim || !calc.result) {
-              tripleCastPassData[idx] = null;
-              return;
-            }
-            tripleCastPassData[idx] = {
-              baseScore: axisBaseScores[idx] || calc.result.baseScore,
-              lastTiming: calc.liveSim.lastSenseTiming,
-              timeline: calc.liveSim.scoreTimeline || [],
-            };
-          });
-          let passData = tripleCastPassData;
-          const finalTimelines = [];
-          for (let round = 0; round < 3; round++) {
-            const iterTimelines = [];
-            for (let axisIdx = 0; axisIdx < 3; axisIdx++) {
-              const tcm = this.appState.tripleCastManager;
-              const party = tcm.getParty(axisIdx);
-              const notationId = tcm.getNotationId(axisIdx);
-              const resultContainer = tcm.calcResults[axisIdx];
-              if (!notationId || !passData[axisIdx]) continue;
-              const extra = {
-                albumLevel: this.appState.albumLevel,
-                albumExtra: this.appState.albumExtra,
-                leader: party.leader,
-                type: ScoreCalculationType.Normal,
-                notationId: notationId,
-                tripleCastScoreProvider: makeProvider(axisIdx, passData),
-                senseBoxRef: tcm.senseBoxes[axisIdx],
-              };
-              const calc = new ScoreCalculator(
-                party.characters,
-                party.posters,
-                party.accessories,
-                extra,
-              );
-              calc.calc(resultContainer);
-              if (calc.result && calc.result.baseScore) {
-                iterTimelines[axisIdx] = calc.liveSim.scoreTimeline;
-                if (round === 2) {
-                  finalTimelines[axisIdx] = calc.liveSim.scoreTimeline;
-                  const axisSenseScore = calc.result.senseScore.reduce(
-                    (acc, cur) => acc + cur,
-                    0,
-                  );
-                  const axisStarActScore = calc.result.starActScore.reduce(
-                    (acc, cur) => acc + cur,
-                    0,
-                  );
-                  const axisTotalScores = calc.result.baseScore.map(
-                    (b) => b + axisSenseScore + axisStarActScore,
-                  );
-                  totalSenseScores += axisSenseScore;
-                  totalStarActScores += axisStarActScore;
-                  totalStarActCount += calc.result.starActCount || 0;
-                  axisDetails[axisIdx] = {
-                    baseScore: calc.result.baseScore.slice(),
-                    senseScore: axisSenseScore,
-                    starActScore: axisStarActScore,
-                    starActCount: calc.result.starActCount || 0,
-                    totalScore: axisTotalScores,
-                  };
-                }
-              }
-            }
-            if (round < 3) {
-              for (let idx = 0; idx < 3; idx++) {
-                if (!passData[idx] || !iterTimelines[idx]) continue;
-                passData[idx] = {
-                  baseScore: passData[idx].baseScore,
-                  lastTiming: passData[idx].lastTiming,
-                  timeline: iterTimelines[idx],
-                };
-              }
-            }
-          }
-          const pass2Timelines = finalTimelines;
-
-          // 用第二遍结果重新构建 mergedTimelineWithTotal
-          const mergedTimelineWithTotal = [];
-          const axisCumulative2 = [
-            { sense: 0, starAct: 0, starActCount: 0 },
-            { sense: 0, starAct: 0, starActCount: 0 },
-            { sense: 0, starAct: 0, starActCount: 0 },
-          ];
-          const useTimeline = pass2Timelines.some((t) => t)
-            ? mergedTimeline.map((entry) => {
-                const p2Entry = pass2Timelines[entry.axisIdx]?.find(
-                  (e) => e.time === entry.time,
-                );
-                return p2Entry ? { ...entry, ...p2Entry } : entry;
-              })
-            : mergedTimeline;
-          useTimeline.forEach((entry) => {
-            axisCumulative2[entry.axisIdx] = {
-              sense: entry.cumulativeSenseScore,
-              starAct: entry.cumulativeStarActScore,
-              starActCount: entry.starActCount,
-            };
-            const totalSenseSum = axisCumulative2.reduce(
-              (acc, cur) => acc + cur.sense,
-              0,
-            );
-            const totalStarActSum = axisCumulative2.reduce(
-              (acc, cur) => acc + cur.starAct,
-              0,
-            );
-            const totalStarActCountSum = axisCumulative2.reduce(
-              (acc, cur) => acc + cur.starActCount,
-              0,
-            );
             mergedTimelineWithTotal.push({
               time: entry.time,
               position: entry.position,
               axisIdx: entry.axisIdx,
-              axesSense: axisCumulative2.map((a) => a.sense),
-              axesStarAct: axisCumulative2.map((a) => a.starAct),
-              axesStarActCount: axisCumulative2.map((a) => a.starActCount),
+              axesSense: axisCumulative.map((a) => a.sense),
+              axesStarAct: axisCumulative.map((a) => a.starAct),
+              axesStarActCount: axisCumulative.map((a) => a.starActCount),
               totalBaseScores: totalBaseScores.slice(),
-              totalSenseScore: totalSenseSum,
-              totalStarActScore: totalStarActSum,
-              totalStarActCount: totalStarActCountSum,
+              totalSenseScore: axisCumulative.reduce((s, a) => s + a.sense, 0),
+              totalStarActScore: axisCumulative.reduce(
+                (s, a) => s + a.starAct,
+                0,
+              ),
+              totalStarActCount: axisCumulative.reduce(
+                (s, a) => s + a.starActCount,
+                0,
+              ),
             });
           });
 
@@ -1721,11 +1633,10 @@ export default class RootLogic {
             mergedTimeline: mergedTimelineWithTotal,
           };
 
-          /** 打印当前分数 */
           finalTimelines.forEach((tl, axisIdx) => {
             if (!tl) return;
-            const bs = calcsPass1[axisIdx]?.liveSim?.baseScore ?? 0;
-            const lt = calcsPass1[axisIdx]?.liveSim?.lastSenseTiming || 1;
+            const bs = calcs[axisIdx]?.liveSim?.baseScore ?? 0;
+            const lt = calcs[axisIdx]?.liveSim?.lastSenseTiming || 1;
             const rows = tl.map((e, i) => {
               const prev =
                 i > 0
@@ -1754,7 +1665,6 @@ export default class RootLogic {
             console.table(rows);
             console.groupEnd();
           });
-          /** 打印当前分数 */
           const totalAllScores = totalBaseScores.map(
             (b, i) => b + totalSenseScores + totalStarActScores,
           );
@@ -2230,48 +2140,14 @@ export default class RootLogic {
       }
 
       const tcm = this.appState.tripleCastManager;
-
-      const buildAxisScoreFn = (passData) => {
-        if (!passData || !passData.baseScore) return () => 0;
-        const baseTotal = passData.baseScore[3];
-        const lastTiming = passData.lastTiming;
-        const timeline = passData.timeline;
-        return (time) => {
-          let sense = 0,
-            starAct = 0;
-          for (let i = timeline.length - 1; i >= 0; i--) {
-            if (timeline[i].time <= time) {
-              sense = timeline[i].cumulativeSenseScore;
-              starAct = timeline[i].cumulativeStarActScore;
-              break;
-            }
-          }
-          return (baseTotal * time) / lastTiming + sense + starAct;
-        };
-      };
-      const makeProvider = (forAxisIdx, passData) => {
-        const fns = [0, 1, 2].map((i) =>
-          i === forAxisIdx || !passData[i]
-            ? null
-            : buildAxisScoreFn(passData[i]),
-        );
-        return (time) => {
-          let sum = 0;
-          for (let i = 0; i < 3; i++) {
-            if (i === forAxisIdx || !fns[i]) continue;
-            sum += fns[i](time);
-          }
-          return sum;
-        };
-      };
-
-      const axisCalcs = [];
-      const axisScores = [];
+      const calcs = [];
+      const senseBoxes = [];
       for (let i = 0; i < 3; i++) {
         const party = tcm.getParty(i);
         const notationId = tcm.getNotationId(i);
         if (!notationId || !party.leader) {
-          axisCalcs[i] = null;
+          calcs[i] = null;
+          senseBoxes[i] = null;
           continue;
         }
         const extra = {
@@ -2280,6 +2156,8 @@ export default class RootLogic {
           leader: party.leader,
           type: ScoreCalculationType.Normal,
           notationId: notationId,
+          senseBoxRef: tcm.senseBoxes[i],
+          skipSimulation: true,
         };
         const calc = new ScoreCalculator(
           party.characters,
@@ -2288,94 +2166,26 @@ export default class RootLogic {
           extra,
         );
         calc.calc();
-        axisCalcs[i] = calc;
-        if (calc.result && calc.result.baseScore) {
-          axisScores[i] = calc.result.baseScore.slice();
-        }
+        calcs[i] = calc;
+        senseBoxes[i] = tcm.senseBoxes[i];
       }
 
-      let passData = {};
-      for (let i = 0; i < 3; i++) {
-        const calc = axisCalcs[i];
-        if (!calc || !calc.liveSim || !calc.result) {
-          passData[i] = null;
-          continue;
-        }
-        passData[i] = {
-          baseScore: axisScores[i] || calc.result.baseScore,
-          lastTiming: calc.liveSim.lastSenseTiming,
-          timeline: calc.liveSim.scoreTimeline || [],
-        };
-      }
-
-      for (let round = 0; round < 3; round++) {
-        const iterTimelines = [];
-        for (let axisIdx = 0; axisIdx < 3; axisIdx++) {
-          const party = tcm.getParty(axisIdx);
-          const notationId = tcm.getNotationId(axisIdx);
-          if (!notationId || !party.leader || !passData[axisIdx]) continue;
-          const extra = {
-            albumLevel: this.appState.albumLevel,
-            albumExtra: items,
-            leader: party.leader,
-            type: ScoreCalculationType.Normal,
-            notationId: notationId,
-            tripleCastScoreProvider: makeProvider(axisIdx, passData),
-          };
-          const calc = new ScoreCalculator(
-            party.characters,
-            party.posters,
-            party.accessories,
-            extra,
-          );
-          calc.calc();
-          if (calc.result && calc.result.baseScore) {
-            iterTimelines[axisIdx] = calc.liveSim.scoreTimeline;
-          }
-        }
-        if (round < 2) {
-          for (let idx = 0; idx < 3; idx++) {
-            if (!passData[idx] || !iterTimelines[idx]) continue;
-            passData[idx] = {
-              baseScore: passData[idx].baseScore,
-              lastTiming: passData[idx].lastTiming,
-              timeline: iterTimelines[idx],
-            };
-          }
-        }
-      }
+      const mergedSim = new MergedLiveSimulator(calcs, senseBoxes);
+      mergedSim.run();
 
       let total = 0;
-      for (let axisIdx = 0; axisIdx < 3; axisIdx++) {
-        const party = tcm.getParty(axisIdx);
-        const notationId = tcm.getNotationId(axisIdx);
-        if (!notationId || !party.leader || !passData[axisIdx]) continue;
-        const extra = {
-          albumLevel: this.appState.albumLevel,
-          albumExtra: items,
-          leader: party.leader,
-          type: ScoreCalculationType.Normal,
-          notationId: notationId,
-          tripleCastScoreProvider: makeProvider(axisIdx, passData),
-        };
-        const calc = new ScoreCalculator(
-          party.characters,
-          party.posters,
-          party.accessories,
-          extra,
+      for (let i = 0; i < 3; i++) {
+        const calc = calcs[i];
+        if (!calc || !calc.result || !calc.result.baseScore) continue;
+        const axisSenseScore = calc.result.senseScore.reduce(
+          (acc, cur) => acc + cur,
+          0,
         );
-        calc.calc();
-        if (calc.result && calc.result.baseScore) {
-          const axisSenseScore = calc.result.senseScore.reduce(
-            (acc, cur) => acc + cur,
-            0,
-          );
-          const axisStarActScore = calc.result.starActScore.reduce(
-            (acc, cur) => acc + cur,
-            0,
-          );
-          total += calc.result.baseScore[0] + axisSenseScore + axisStarActScore;
-        }
+        const axisStarActScore = calc.result.starActScore.reduce(
+          (acc, cur) => acc + cur,
+          0,
+        );
+        total += calc.result.baseScore[0] + axisSenseScore + axisStarActScore;
       }
       return total;
     };
