@@ -77,6 +77,12 @@ export default class PartyManager {
       _("div", { style: { marginTop: "4px" } }, [
         (this.highEndFilter = _("input", { type: "checkbox" })),
         _("text", "查询列表仅显示：四星角色/SSR海报/Lv10饰品"),
+        _("input", {
+          type: "button",
+          value: "自动配队",
+          style: { marginLeft: "1em" },
+          event: { click: (_) => this.showAutoPartyPopup() },
+        }),
       ]),
     );
 
@@ -445,6 +451,519 @@ export default class PartyManager {
   update() {
     if (!this.leaderSelection || this.leaderSelection.length === 0) return;
     this.changeParty();
+  }
+
+  showAutoPartyPopup() {
+    const characters = root.appState.characters.filter(
+      (c) => c.data.Rarity === "Rare4",
+    );
+    const posters = root.appState.posters.filter(
+      (p) => p.data.Rarity === "SSR",
+    );
+    const accessories = root.appState.accessories.filter((a) => a.level >= 10);
+
+    if (characters.length < 1 || posters.length < 1 || accessories.length < 5) {
+      alert("需要至少1个四星角色、1张SSR海报、5个Lv10饰品才能使用自动配队");
+      return;
+    }
+
+    const overlay = _("div", { className: "picking-overlay" });
+    const dialog = _("div", {
+      className: "auto-party-dialog",
+      style: {
+        position: "fixed",
+        top: "50%",
+        left: "50%",
+        transform: "translate(-50%, -50%)",
+        background: "white",
+        padding: "20px",
+        borderRadius: "8px",
+        boxShadow: "0 4px 20px rgba(0,0,0,0.3)",
+        maxHeight: "80vh",
+        overflowY: "auto",
+        minWidth: "400px",
+        zIndex: 10001,
+      },
+    });
+
+    const selectedChars = [];
+    const selectedPosters = [];
+    const selectedAccs = [];
+    let leaderIdx = 0;
+    let leaderPosterIdx = -1;
+
+    const title = _("h3", { style: { marginTop: 0 } }, [
+      _("text", "自动配队 - 选择候选项"),
+    ]);
+
+    const leaderSection = _("div", {
+      style: {
+        marginBottom: "15px",
+        padding: "10px",
+        background: "#f0f0f0",
+        borderRadius: "4px",
+      },
+    });
+    leaderSection.appendChild(
+      _("div", { style: { fontWeight: "bold", marginBottom: "8px" } }, [
+        _("text", "队长设置"),
+      ]),
+    );
+
+    const leaderSelect = _("select", {
+      style: { width: "100%", marginBottom: "8px" },
+    });
+    leaderIdx = 0;
+
+    const leaderPosterSelect = _("select", { style: { width: "100%" } });
+    leaderPosterIdx = -1;
+
+    const refreshLeaderOptions = () => {
+      const prevLeader = leaderSelect.value;
+      const prevPoster = leaderPosterSelect.value;
+      removeAllChilds(leaderSelect);
+      characters.forEach((c, idx) => {
+        if (!selectedChars[idx]) return;
+        leaderSelect.appendChild(
+          _("option", { value: idx }, [_("text", c.fullCardName)]),
+        );
+      });
+      if (leaderSelect.querySelector(`option[value="${prevLeader}"]`)) {
+        leaderSelect.value = prevLeader;
+      }
+      leaderIdx = parseInt(leaderSelect.value);
+
+      removeAllChilds(leaderPosterSelect);
+      leaderPosterSelect.appendChild(
+        _("option", { value: -1 }, [_("text", "（自动选择最优海报）")]),
+      );
+      posters.forEach((p, idx) => {
+        if (!selectedPosters[idx]) return;
+        leaderPosterSelect.appendChild(
+          _("option", { value: idx }, [_("text", p.fullPosterName)]),
+        );
+      });
+      if (leaderPosterSelect.querySelector(`option[value="${prevPoster}"]`)) {
+        leaderPosterSelect.value = prevPoster;
+      }
+      leaderPosterIdx = parseInt(leaderPosterSelect.value);
+    };
+    refreshLeaderOptions();
+
+    leaderSection.appendChild(
+      _("div", {}, [_("text", "队长: "), leaderSelect]),
+    );
+    leaderSection.appendChild(
+      _("div", { style: { marginTop: "8px" } }, [
+        _("text", "队长海报: "),
+        leaderPosterSelect,
+      ]),
+    );
+
+    const charSection = _("div", { style: { marginBottom: "15px" } });
+    charSection.appendChild(
+      _("div", { style: { fontWeight: "bold", marginBottom: "8px" } }, [
+        _("text", "候选角色"),
+      ]),
+    );
+    const charSelectAll = _("input", {
+      type: "checkbox",
+      event: {
+        change: (e) => {
+          charSection
+            .querySelectorAll("input[type=checkbox][data-chara]")
+            .forEach((cb) => {
+              cb.checked = e.target.checked;
+              selectedChars[cb.getAttribute("data-chara")] = e.target.checked;
+            });
+          refreshLeaderOptions();
+        },
+      },
+    });
+    charSection.appendChild(
+      _("label", {}, [charSelectAll, _("text", " 全选/全不选")]),
+    );
+    const charGrid = _("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "repeat(5, 1fr)",
+        gap: "4px",
+        maxHeight: "200px",
+        overflowY: "auto",
+        border: "1px solid #ddd",
+        padding: "8px",
+      },
+    });
+    characters.forEach((c, idx) => {
+      const cb = _("input", {
+        type: "checkbox",
+        checked: true,
+        "data-chara": idx,
+        event: {
+          change: (e) => {
+            selectedChars[idx] = e.target.checked;
+            refreshLeaderOptions();
+          },
+        },
+      });
+      const icon = c.iconNode.cloneNode(true);
+      icon.style.cursor = "pointer";
+      icon.addEventListener("click", () => {
+        cb.checked = !cb.checked;
+        selectedChars[idx] = cb.checked;
+        refreshLeaderOptions();
+      });
+      const wrapper = _(
+        "span",
+        {
+          style: {
+            display: "inline-flex",
+            flexDirection: "column",
+            alignItems: "center",
+            fontSize: "10px",
+          },
+        },
+        [icon, cb],
+      );
+      charGrid.appendChild(wrapper);
+      selectedChars[idx] = true;
+    });
+    charSection.appendChild(charGrid);
+
+    const posterSection = _("div", { style: { marginBottom: "15px" } });
+    posterSection.appendChild(
+      _("div", { style: { fontWeight: "bold", marginBottom: "8px" } }, [
+        _("text", "候选海报"),
+      ]),
+    );
+    const posterSelectAll = _("input", {
+      type: "checkbox",
+      event: {
+        change: (e) => {
+          posterSection
+            .querySelectorAll("input[type=checkbox][data-poster]")
+            .forEach((cb) => {
+              cb.checked = e.target.checked;
+              selectedPosters[cb.getAttribute("data-poster")] =
+                e.target.checked;
+            });
+          refreshLeaderOptions();
+        },
+      },
+    });
+    posterSection.appendChild(
+      _("label", {}, [posterSelectAll, _("text", " 全选/全不选")]),
+    );
+    const posterGrid = _("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "repeat(5, 1fr)",
+        gap: "4px",
+        maxHeight: "200px",
+        overflowY: "auto",
+        border: "1px solid #ddd",
+        padding: "8px",
+      },
+    });
+    posters.forEach((p, idx) => {
+      const cb = _("input", {
+        type: "checkbox",
+        checked: true,
+        "data-poster": idx,
+        event: {
+          change: (e) => {
+            selectedPosters[idx] = e.target.checked;
+            refreshLeaderOptions();
+          },
+        },
+      });
+      const icon = p.iconNode.cloneNode(true);
+      icon.style.cursor = "pointer";
+      icon.addEventListener("click", () => {
+        cb.checked = !cb.checked;
+        selectedPosters[idx] = cb.checked;
+        refreshLeaderOptions();
+      });
+      const wrapper = _(
+        "span",
+        {
+          style: {
+            display: "inline-flex",
+            flexDirection: "column",
+            alignItems: "center",
+            fontSize: "10px",
+          },
+        },
+        [icon, cb],
+      );
+      posterGrid.appendChild(wrapper);
+      selectedPosters[idx] = true;
+    });
+    posterSection.appendChild(posterGrid);
+
+    const accSection = _("div", { style: { marginBottom: "15px" } });
+    accSection.appendChild(
+      _("div", { style: { fontWeight: "bold", marginBottom: "8px" } }, [
+        _("text", "候选饰品"),
+      ]),
+    );
+    const accSelectAll = _("input", {
+      type: "checkbox",
+      event: {
+        change: (e) => {
+          accSection
+            .querySelectorAll("input[type=checkbox][data-acc]")
+            .forEach((cb) => {
+              cb.checked = e.target.checked;
+              selectedAccs[cb.getAttribute("data-acc")] = e.target.checked;
+            });
+        },
+      },
+    });
+    accSection.appendChild(
+      _("label", {}, [accSelectAll, _("text", " 全选/全不选")]),
+    );
+    const accGrid = _("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "repeat(5, 1fr)",
+        gap: "4px",
+        maxHeight: "200px",
+        overflowY: "auto",
+        border: "1px solid #ddd",
+        padding: "8px",
+      },
+    });
+    accessories.forEach((a, idx) => {
+      const cb = _("input", {
+        type: "checkbox",
+        checked: true,
+        "data-acc": idx,
+        event: {
+          change: (e) => {
+            selectedAccs[idx] = e.target.checked;
+          },
+        },
+      });
+      const icon = a.iconNode.cloneNode(true);
+      icon.style.cursor = "pointer";
+      icon.addEventListener("click", () => {
+        cb.checked = !cb.checked;
+        selectedAccs[idx] = cb.checked;
+      });
+      const wrapper = _(
+        "span",
+        {
+          style: {
+            display: "inline-flex",
+            flexDirection: "column",
+            alignItems: "center",
+            fontSize: "10px",
+          },
+        },
+        [icon, cb],
+      );
+      accGrid.appendChild(wrapper);
+      selectedAccs[idx] = true;
+    });
+    accSection.appendChild(accGrid);
+
+    const estInfo = _("div", {
+      style: {
+        marginBottom: "15px",
+        padding: "10px",
+        background: "#fff3cd",
+        borderRadius: "4px",
+      },
+    });
+    const estText = _("span", {}, [_("text", "预估遍历次数: 计算中...")]);
+    estInfo.appendChild(estText);
+
+    const updateEstimate = () => {
+      const charCount = Array.from(selectedChars).filter(Boolean).length;
+      const posterCount = Array.from(selectedPosters).filter(Boolean).length;
+      const accCount = Array.from(selectedAccs).filter(Boolean).length;
+      const comb = (n, k) =>
+        n < k
+          ? 0
+          : Array.from({ length: k }, (_, i) => n - i).reduce(
+              (a, b) => a * b,
+              0,
+            ) /
+            Array.from({ length: k }, (_, i) => i + 1).reduce(
+              (a, b) => a * b,
+              0,
+            );
+      const charComb = comb(charCount - 1, 4);
+      const posterComb =
+        leaderPosterIdx === -1
+          ? comb(posterCount - 1, 4)
+          : comb(posterCount, 4);
+      const accComb = comb(accCount, 5);
+      const total = charComb * posterComb * accComb;
+      estText.textContent = `预估遍历次数: ${total.toLocaleString()} (角色${charComb} × 海报${posterComb} × 饰品${accComb})`;
+    };
+    updateEstimate();
+
+    leaderSelect.addEventListener("change", (e) => {
+      leaderIdx = parseInt(e.target.value);
+      updateEstimate();
+    });
+    leaderPosterSelect.addEventListener("change", (e) => {
+      leaderPosterIdx = parseInt(e.target.value);
+      updateEstimate();
+    });
+
+    const progressSection = _("div", {
+      style: { display: "none", marginBottom: "15px" },
+    });
+    const progressBar = _("div", {
+      style: {
+        width: "100%",
+        height: "20px",
+        background: "#e0e0e0",
+        borderRadius: "4px",
+        overflow: "hidden",
+      },
+    });
+    const progressFill = _("div", {
+      style: {
+        width: "0%",
+        height: "100%",
+        background: "#4caf50",
+        transition: "width 0.1s",
+      },
+    });
+    progressBar.appendChild(progressFill);
+    const progressText = _("div", {
+      style: { textAlign: "center", marginTop: "4px" },
+    });
+    progressSection.appendChild(progressBar);
+    progressSection.appendChild(progressText);
+
+    const resultSection = _("div", {
+      style: {
+        display: "none",
+        marginBottom: "15px",
+        padding: "10px",
+        background: "#e8f5e9",
+        borderRadius: "4px",
+      },
+    });
+
+    const btnRow = _("div", {
+      style: { display: "flex", justifyContent: "flex-end", gap: "10px" },
+    });
+    const cancelBtn = _("input", {
+      type: "button",
+      value: "取消",
+      event: {
+        click: () => {
+          overlay.remove();
+        },
+      },
+    });
+    const startBtn = _("input", {
+      type: "button",
+      value: "开始计算",
+      event: {
+        click: async () => {
+          startBtn.disabled = true;
+          cancelBtn.value = "关闭";
+          progressSection.style.display = "";
+          resultSection.style.display = "none";
+
+          const selChars = Array.from(selectedChars)
+            .map((v, i) => (v ? i : -1))
+            .filter((i) => i >= 0)
+            .map((i) => characters[i]);
+          const selPosters = Array.from(selectedPosters)
+            .map((v, i) => (v ? i : -1))
+            .filter((i) => i >= 0)
+            .map((i) => posters[i]);
+          const selAccs = Array.from(selectedAccs)
+            .map((v, i) => (v ? i : -1))
+            .filter((i) => i >= 0)
+            .map((i) => accessories[i]);
+          const leader = characters[leaderIdx];
+          const leaderPoster =
+            leaderPosterIdx === -1 ? null : posters[leaderPosterIdx];
+
+          try {
+            const result = await root.handleAutoParty({
+              selChars,
+              selPosters,
+              selAccs,
+              leader,
+              leaderPoster,
+              onProgress: (current, total, bestScore) => {
+                const pct = ((current / total) * 100).toFixed(1);
+                progressFill.style.width = pct + "%";
+                progressText.textContent = `${current.toLocaleString()} / ${total.toLocaleString()} (${pct}%) - 当前最高分: ${bestScore}`;
+              },
+            });
+
+            if (result) {
+              const party = this.currentParty;
+              result.characters.forEach((c, i) => {
+                party.characters[i] = c;
+              });
+              result.posters.forEach((p, i) => {
+                party.posters[i] = p;
+              });
+              result.accessories.forEach((a, i) => {
+                party.accessories[i] = a;
+              });
+              party.leader = leader;
+
+              resultSection.style.display = "";
+              resultSection.innerHTML = "";
+              resultSection.appendChild(
+                _("div", { style: { fontWeight: "bold" } }, [
+                  _("text", `最优配队 (分数: ${result.bestScore})`),
+                ]),
+              );
+              const btnApply = _("input", {
+                type: "button",
+                value: "应用到当前编队",
+                style: { marginTop: "8px" },
+                event: {
+                  click: () => {
+                    root.update({ party: true });
+                    overlay.remove();
+                  },
+                },
+              });
+              resultSection.appendChild(btnApply);
+            } else {
+              resultSection.style.display = "";
+              resultSection.innerHTML = "<div>未找到有效配队</div>";
+            }
+          } catch (e) {
+            console.error(e);
+            resultSection.style.display = "";
+            resultSection.innerHTML = `<div style="color:red">计算出错: ${e.message}</div>`;
+          }
+        },
+      },
+    });
+    btnRow.appendChild(cancelBtn);
+    btnRow.appendChild(startBtn);
+
+    dialog.appendChild(title);
+    dialog.appendChild(leaderSection);
+    dialog.appendChild(charSection);
+    dialog.appendChild(posterSection);
+    dialog.appendChild(accSection);
+    dialog.appendChild(estInfo);
+    dialog.appendChild(progressSection);
+    dialog.appendChild(resultSection);
+    dialog.appendChild(btnRow);
+    overlay.appendChild(dialog);
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) overlay.remove();
+    });
+    document.body.appendChild(overlay);
   }
 
   toJSON() {

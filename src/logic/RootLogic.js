@@ -2247,6 +2247,270 @@ export default class RootLogic {
     console.log(descriptionCount);
   }
 
+  async handleAutoParty({
+    selChars,
+    selPosters,
+    selAccs,
+    leader,
+    leaderPoster,
+    onProgress,
+  }) {
+    if (selChars.length < 4 || selPosters.length < 4 || selAccs.length < 5) {
+      alert("可选角色/海报/饰品数量不足，请增加候选项");
+      return null;
+    }
+
+    const combos = (arr, k) => {
+      const result = [];
+      const backtrack = (start, path) => {
+        if (path.length === k) {
+          result.push(path.slice());
+          return;
+        }
+        for (let i = start; i < arr.length; i++) {
+          path.push(arr[i]);
+          backtrack(i + 1, path);
+          path.pop();
+        }
+      };
+      backtrack(0, []);
+      return result;
+    };
+
+    const remChars = selChars.filter((c) => c !== leader);
+    const remPosters = leaderPoster
+      ? selPosters.filter((p) => p !== leaderPoster)
+      : selPosters;
+    const charCombos = combos(remChars, 4);
+    const posterCombos = combos(remPosters, 4);
+    const accCombos = combos(selAccs, 5);
+
+    const accCompatibility = selAccs.map((acc) => {
+      const effects = [...acc.mainEffects];
+      if (acc.randomEffect) effects.push(acc.randomEffect);
+      const charBaseTriggers = new Set();
+      const companyTriggers = new Set();
+      const attrTriggers = new Set();
+      const senseTypeTriggers = new Set();
+      const charBaseGroupTriggers = [];
+      let hasCharSpecificTrigger = false;
+      let hasUniversalTrigger = false;
+      for (const eff of effects) {
+        const effect = eff.effect;
+        if (
+          effect.FireTimingType !== "Passive" &&
+          effect.FireTimingType !== "StartLive"
+        )
+          continue;
+        for (const trigger of effect.Triggers) {
+          switch (trigger.Trigger) {
+            case "CharacterBase":
+              charBaseTriggers.add(trigger.Value);
+              hasCharSpecificTrigger = true;
+              break;
+            case "Company":
+              companyTriggers.add(trigger.Value);
+              hasCharSpecificTrigger = true;
+              break;
+            case "Attribute":
+              attrTriggers.add(trigger.Value);
+              hasCharSpecificTrigger = true;
+              break;
+            case "SenseType":
+              senseTypeTriggers.add(trigger.Value);
+              hasCharSpecificTrigger = true;
+              break;
+            case "CharacterBaseGroup":
+              charBaseGroupTriggers.push(trigger.Value);
+              hasCharSpecificTrigger = true;
+              break;
+            default:
+              hasUniversalTrigger = true;
+              break;
+          }
+        }
+      }
+      return {
+        acc,
+        charBaseTriggers,
+        companyTriggers,
+        attrTriggers,
+        senseTypeTriggers,
+        charBaseGroupTriggers,
+        hasCharSpecificTrigger,
+        hasUniversalTrigger,
+      };
+    });
+
+    const isAccCompatible = (accInfo, chara) => {
+      if (!chara) return true;
+      const {
+        charBaseTriggers,
+        companyTriggers,
+        attrTriggers,
+        senseTypeTriggers,
+        charBaseGroupTriggers,
+        hasCharSpecificTrigger,
+        hasUniversalTrigger,
+      } = accInfo;
+      if (!hasCharSpecificTrigger) return true;
+      if (hasUniversalTrigger) return true;
+      if (
+        charBaseTriggers.size > 0 &&
+        chara.isCharacterBaseIdInList([...charBaseTriggers])
+      )
+        return true;
+      if (companyTriggers.size > 0) {
+        for (const cid of companyTriggers) {
+          if (chara.isCharacterInCompany(cid)) return true;
+        }
+      }
+      if (attrTriggers.size > 0) {
+        for (const attr of attrTriggers) {
+          if (chara.isCharacterAttribute(attr)) return true;
+        }
+      }
+      if (senseTypeTriggers.size > 0) {
+        for (const st of senseTypeTriggers) {
+          if (chara.isCharacterSenseType(st)) return true;
+        }
+      }
+      if (charBaseGroupTriggers.length > 0) {
+        for (const gId of charBaseGroupTriggers) {
+          const group = GameDb.EffectTriggerCharacterBaseGroup[gId];
+          if (
+            group &&
+            chara.isCharacterBaseIdInList(group.CharacterBaseMasterIds)
+          )
+            return true;
+        }
+      }
+      return false;
+    };
+
+    const notationId = this.senseNoteSelect
+      ? this.senseNoteSelect.value | 0
+      : 0;
+    const notationData = GameDb.SenseNotation[notationId];
+    const minCtPerPos = [Infinity, Infinity, Infinity, Infinity, Infinity];
+    if (notationData && notationData.Details) {
+      const lanes = [[], [], [], [], []];
+      notationData.Details.forEach((d) =>
+        lanes[d.Position - 1].push(d.TimingSecond),
+      );
+      lanes.forEach((lane, idx) => {
+        lane.sort((a, b) => a - b);
+        for (let i = 1; i < lane.length; i++) {
+          minCtPerPos[idx] = Math.min(minCtPerPos[idx], lane[i] - lane[i - 1]);
+        }
+      });
+    }
+
+    const getEffCt = (chara) => Math.min(...chara.senseAll.map((s) => s.ct));
+    console.log("minCtPerPos:", minCtPerPos);
+    console.log(
+      "leader CT:",
+      leader.senseAll.map((s) => s.ct),
+      "eff:",
+      getEffCt(leader),
+    );
+
+    const total = charCombos.length * posterCombos.length * accCombos.length;
+    let bestScore = -1;
+    let bestResult = null;
+    let count = 0;
+
+    const extra = {
+      albumLevel: this.appState.albumLevel,
+      albumExtra: this.appState.albumExtra,
+      leader: leader,
+      type: ScoreCalculationType.Normal,
+    };
+
+    const checkCtFilter = (members, enabled) => {
+      if (!enabled) return true;
+      for (let s = 0; s < 5; s++) {
+        if (
+          minCtPerPos[s] !== Infinity &&
+          getEffCt(members[s]) > minCtPerPos[s]
+        )
+          return false;
+      }
+      return true;
+    };
+
+    const doSearch = async (useCt) => {
+      bestScore = -1;
+      bestResult = null;
+      count = 0;
+      for (const cc of charCombos) {
+        const members = [leader, ...cc];
+        if (useCt && !checkCtFilter(members, true)) {
+          count += posterCombos.length * accCombos.length;
+          continue;
+        }
+
+        for (const pc of posterCombos) {
+          const posters = leaderPoster ? [leaderPoster, ...pc] : pc;
+          for (const ac of accCombos) {
+            const accInfos = ac.map(
+              (a) => accCompatibility[selAccs.indexOf(a)],
+            );
+            let hasIncompatible = false;
+            for (let slot = 0; slot < 5; slot++) {
+              if (!isAccCompatible(accInfos[slot], members[slot])) {
+                hasIncompatible = true;
+                break;
+              }
+            }
+            if (hasIncompatible) {
+              count++;
+              continue;
+            }
+
+            const calc = new ScoreCalculator(members, posters, ac, extra);
+            calc.calc(null);
+
+            if (calc.result && calc.result.baseScore) {
+              const senseScore = calc.result.senseScore.reduce(
+                (acc, cur) => acc + cur,
+                0,
+              );
+              const starActScore = calc.result.starActScore.reduce(
+                (acc, cur) => acc + cur,
+                0,
+              );
+              const totalScore =
+                calc.result.baseScore[3] + senseScore + starActScore;
+
+              if (totalScore > bestScore) {
+                bestScore = totalScore;
+                bestResult = { characters: members, posters, accessories: ac };
+              }
+            }
+
+            count++;
+            if (count % 200 === 0) {
+              onProgress(count, total, bestScore);
+              await new Promise((r) => setTimeout(r, 0));
+            }
+          }
+        }
+      }
+    };
+
+    await doSearch(true);
+    if (!bestResult) {
+      console.log("CT过滤后无结果，去掉CT限制重新搜索");
+      await doSearch(false);
+    }
+
+    if (bestResult) {
+      bestResult.bestScore = bestScore;
+    }
+    return bestResult;
+  }
+
   keikoFillChara() {
     const keikoCharaId = this.keikoSelect.value | 0;
     if (!keikoCharaId) {
