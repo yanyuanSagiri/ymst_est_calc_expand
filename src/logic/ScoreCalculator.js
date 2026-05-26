@@ -99,12 +99,14 @@ export default class ScoreCalculator {
       });
 
     const passiveEffects = this.passiveEffects;
-    Object.values(GameDb.AlbumEffect).forEach((i) => {
-      if (this.extra.albumLevel < i.Level) return;
-      const effect = Effect.get(i.EffectMasterId, 1);
-      if (!effect.canTrigger(this, -1)) return;
-      passiveEffects.album.push({ effect, source: -1 });
-    });
+    Object.values(GameDb.AlbumEffect)
+      .reverse()
+      .forEach((i) => {
+        if (this.extra.albumLevel < i.Level) return;
+        const effect = Effect.get(i.EffectMasterId, 1);
+        if (!effect.canTrigger(this, -1)) return;
+        passiveEffects.album.push({ effect, source: -1 });
+      });
     const albumMemberTriggers = new Set([
       "CharacterBase",
       "Character",
@@ -149,9 +151,56 @@ export default class ScoreCalculator {
     this.members.forEach((chara, idx) => {
       if (!chara) return;
       this.liveSim.skipSense[idx] = chara.data.CharacterBaseMasterId === 401;
+      // 开花效果
       chara.bloomBonusEffects.forEach((effect) =>
         effect.applyEffect(this, idx, StatBonusType.Album),
       );
+
+      // 海报效果
+      const poster = this.posters[idx];
+      poster?.abilities.forEach((ability) => {
+        if (!ability.unlocked) return;
+        if (ability.data.Type === "Leader" && this.members[idx] !== leader)
+          return;
+        const abilityEffectBranch = ability.getActiveBranch(this.liveSim);
+        if (!abilityEffectBranch) return;
+        abilityEffectBranch.BranchEffects.forEach((effect) => {
+          effect = Effect.get(
+            effect.EffectMasterId,
+            ability.level + ability.release,
+          );
+          if (
+            effect.FireTimingType !== "Passive" &&
+            effect.FireTimingType !== "StartLive"
+          )
+            return;
+          if (!effect.canTrigger(this, idx)) return;
+          effect.applyEffect(this, idx, StatBonusType.Poster);
+        });
+      });
+
+      // 饰品效果
+      const accessory = this.accessories[idx];
+      for (let effect of accessory?.mainEffects ?? []) {
+        effect = effect.effect;
+        if (
+          effect.FireTimingType !== "Passive" &&
+          effect.FireTimingType !== "StartLive"
+        )
+          continue;
+        if (!effect.canTrigger(this, idx)) continue;
+        effect.applyEffect(this, idx, StatBonusType.Accessory);
+      }
+      if (accessory?.randomEffect) {
+        let effect = accessory.randomEffect.effect;
+        if (
+          effect.canTrigger(this, idx) &&
+          (effect.FireTimingType === "Passive" ||
+            effect.FireTimingType === "StartLive")
+        ) {
+          effect.applyEffect(this, idx, StatBonusType.Accessory);
+        }
+      }
     });
     this.liveSim.setStarActRequirements(leader.staract.actualRequirements);
     if (leader.staract.data.BranchCondition1 === "StorageSenseLightCount") {
@@ -231,55 +280,6 @@ export default class ScoreCalculator {
         });
       });
 
-    // accessory
-    this.accessories.forEach((accessory, idx) => {
-      if (!accessory) return;
-      for (let effect of accessory.mainEffects) {
-        effect = effect.effect;
-        if (
-          effect.FireTimingType !== "Passive" &&
-          effect.FireTimingType !== "StartLive"
-        )
-          continue;
-        if (!effect.canTrigger(this, idx)) continue;
-        effect.applyEffect(this, idx, StatBonusType.Accessory);
-      }
-      if (accessory.randomEffect) {
-        let effect = accessory.randomEffect.effect;
-        if (
-          effect.canTrigger(this, idx) &&
-          (effect.FireTimingType === "Passive" ||
-            effect.FireTimingType === "StartLive")
-        ) {
-          effect.applyEffect(this, idx, StatBonusType.Accessory);
-        }
-      }
-    });
-
-    // poster
-    this.posters.forEach((poster, idx) => {
-      if (!poster) return;
-      poster.abilities.forEach((ability) => {
-        if (!ability.unlocked) return;
-        if (ability.data.Type === "Leader" && this.members[idx] !== leader)
-          return;
-        const abilityEffectBranch = ability.getActiveBranch(this.liveSim);
-        if (!abilityEffectBranch) return;
-        abilityEffectBranch.BranchEffects.forEach((effect) => {
-          effect = Effect.get(
-            effect.EffectMasterId,
-            ability.level + ability.release,
-          );
-          if (
-            effect.FireTimingType !== "Passive" &&
-            effect.FireTimingType !== "StartLive"
-          )
-            return;
-          if (!effect.canTrigger(this, idx)) return;
-          effect.applyEffect(this, idx, StatBonusType.Poster);
-        });
-      });
-    });
 
     // theater effect
     const theaterEffects = root.appState.theaterLevel.getEffects();
