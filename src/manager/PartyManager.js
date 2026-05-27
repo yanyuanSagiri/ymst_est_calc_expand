@@ -486,11 +486,40 @@ export default class PartyManager {
       },
     });
 
+    const savedChars = new Set();
+    const savedPosters = new Set();
+    const savedAccs = new Set();
+    let savedLeaderId = null;
+    let savedLeaderPosterId = null;
+
+    try {
+      const raw = localStorage.getItem("autoPartyState");
+      if (raw) {
+        const data = JSON.parse(raw);
+        (data.chars || []).forEach((id) => savedChars.add(id));
+        (data.posters || []).forEach((id) => savedPosters.add(id));
+        (data.accs || []).forEach((id) => savedAccs.add(id));
+        savedLeaderId = data.leaderId ?? null;
+        savedLeaderPosterId = data.leaderPosterId ?? null;
+      }
+    } catch (_) {}
+
     const selectedChars = [];
     const selectedPosters = [];
     const selectedAccs = [];
     let leaderIdx = 0;
     let leaderPosterIdx = -1;
+
+    const saveState = () => {
+      const data = {
+        chars: characters.filter((_, i) => selectedChars[i]).map((c) => c.data.Id),
+        posters: posters.filter((_, i) => selectedPosters[i]).map((p) => p.data.Id),
+        accs: accessories.filter((_, i) => selectedAccs[i]).map((a) => a.data.Id),
+        leaderId: characters[leaderIdx]?.data.Id ?? null,
+        leaderPosterId: leaderPosterIdx >= 0 ? posters[leaderPosterIdx]?.data.Id ?? null : null,
+      };
+      try { localStorage.setItem("autoPartyState", JSON.stringify(data)); } catch (_) {}
+    };
 
     const title = _("h3", { style: { marginTop: 0 } }, [
       _("text", "自动配队 - 选择候选项"),
@@ -548,7 +577,15 @@ export default class PartyManager {
       }
       leaderPosterIdx = parseInt(leaderPosterSelect.value);
     };
-    refreshLeaderOptions();
+
+    if (savedLeaderId != null) {
+      const li = characters.findIndex((c) => c.data.Id === savedLeaderId);
+      if (li >= 0) leaderIdx = li;
+    }
+    if (savedLeaderPosterId != null) {
+      const pi = posters.findIndex((p) => p.data.Id === savedLeaderPosterId);
+      if (pi >= 0) leaderPosterIdx = pi;
+    }
 
     leaderSection.appendChild(
       _("div", {}, [_("text", "队长: "), leaderSelect]),
@@ -577,6 +614,7 @@ export default class PartyManager {
               selectedChars[cb.getAttribute("data-chara")] = e.target.checked;
             });
           refreshLeaderOptions();
+          saveState();
         },
       },
     });
@@ -595,23 +633,27 @@ export default class PartyManager {
       },
     });
     characters.forEach((c, idx) => {
+      const isChecked = savedChars.has(c.data.Id) || savedChars.size === 0;
+      selectedChars[idx] = isChecked;
       const cb = _("input", {
         type: "checkbox",
-        checked: true,
         "data-chara": idx,
         event: {
           change: (e) => {
             selectedChars[idx] = e.target.checked;
             refreshLeaderOptions();
+            saveState();
           },
         },
       });
+      cb.checked = isChecked;
       const icon = c.iconNode.cloneNode(true);
       icon.style.cursor = "pointer";
       icon.addEventListener("click", () => {
         cb.checked = !cb.checked;
         selectedChars[idx] = cb.checked;
         refreshLeaderOptions();
+        saveState();
       });
       const wrapper = _(
         "span",
@@ -626,7 +668,6 @@ export default class PartyManager {
         [icon, cb],
       );
       charGrid.appendChild(wrapper);
-      selectedChars[idx] = true;
     });
     charSection.appendChild(charGrid);
 
@@ -648,6 +689,7 @@ export default class PartyManager {
                 e.target.checked;
             });
           refreshLeaderOptions();
+          saveState();
         },
       },
     });
@@ -666,23 +708,27 @@ export default class PartyManager {
       },
     });
     posters.forEach((p, idx) => {
+      const isChecked = savedPosters.has(p.data.Id) || savedPosters.size === 0;
+      selectedPosters[idx] = isChecked;
       const cb = _("input", {
         type: "checkbox",
-        checked: true,
         "data-poster": idx,
         event: {
           change: (e) => {
             selectedPosters[idx] = e.target.checked;
             refreshLeaderOptions();
+            saveState();
           },
         },
       });
+      cb.checked = isChecked;
       const icon = p.iconNode.cloneNode(true);
       icon.style.cursor = "pointer";
       icon.addEventListener("click", () => {
         cb.checked = !cb.checked;
         selectedPosters[idx] = cb.checked;
         refreshLeaderOptions();
+        saveState();
       });
       const wrapper = _(
         "span",
@@ -697,7 +743,6 @@ export default class PartyManager {
         [icon, cb],
       );
       posterGrid.appendChild(wrapper);
-      selectedPosters[idx] = true;
     });
     posterSection.appendChild(posterGrid);
 
@@ -717,6 +762,7 @@ export default class PartyManager {
               cb.checked = e.target.checked;
               selectedAccs[cb.getAttribute("data-acc")] = e.target.checked;
             });
+          saveState();
         },
       },
     });
@@ -735,21 +781,25 @@ export default class PartyManager {
       },
     });
     accessories.forEach((a, idx) => {
+      const isChecked = savedAccs.has(a.data.Id) || savedAccs.size === 0;
+      selectedAccs[idx] = isChecked;
       const cb = _("input", {
         type: "checkbox",
-        checked: true,
         "data-acc": idx,
         event: {
           change: (e) => {
             selectedAccs[idx] = e.target.checked;
+            saveState();
           },
         },
       });
+      cb.checked = isChecked;
       const icon = a.iconNode.cloneNode(true);
       icon.style.cursor = "pointer";
       icon.addEventListener("click", () => {
         cb.checked = !cb.checked;
         selectedAccs[idx] = cb.checked;
+        saveState();
       });
       const wrapper = _(
         "span",
@@ -764,9 +814,24 @@ export default class PartyManager {
         [icon, cb],
       );
       accGrid.appendChild(wrapper);
-      selectedAccs[idx] = true;
     });
     accSection.appendChild(accGrid);
+
+    refreshLeaderOptions();
+    if (savedLeaderId != null) {
+      if (leaderSelect.querySelector(`option[value="${leaderIdx}"]`)) {
+        leaderSelect.value = leaderIdx;
+      }
+    }
+    if (savedLeaderPosterId != null) {
+      if (leaderPosterSelect.querySelector(`option[value="${leaderPosterIdx}"]`)) {
+        leaderPosterSelect.value = leaderPosterIdx;
+      }
+    } else if (savedChars.size > 0 && savedLeaderPosterId === null) {
+      leaderPosterSelect.value = -1;
+    }
+    leaderIdx = parseInt(leaderSelect.value) || 0;
+    leaderPosterIdx = parseInt(leaderPosterSelect.value) || -1;
 
     const estInfo = _("div", {
       style: {
@@ -787,19 +852,26 @@ export default class PartyManager {
         n < k
           ? 0
           : Array.from({ length: k }, (_, i) => n - i).reduce(
-              (a, b) => a * b,
-              0,
-            ) /
+            (a, b) => a * b,
+            0,
+          ) /
             Array.from({ length: k }, (_, i) => i + 1).reduce(
               (a, b) => a * b,
               0,
             );
-      const charComb = comb(charCount - 1, 4);
+      const perm = (n, k) =>
+        n < k
+          ? 0
+          : Array.from({ length: k }, (_, i) => n - i).reduce(
+            (a, b) => a * b,
+            0,
+          );
+      const charComb = perm(charCount, 5);
       const posterComb =
         leaderPosterIdx === -1
-          ? comb(posterCount - 1, 4)
-          : comb(posterCount, 4);
-      const accComb = comb(accCount, 5);
+          ? perm(posterCount, 5)
+          : perm(posterCount - 1, 4);
+      const accComb = perm(accCount, 5);
       const total = charComb * posterComb * accComb;
       estText.textContent = `预估遍历次数: ${total.toLocaleString()} (角色${charComb} × 海报${posterComb} × 饰品${accComb})`;
     };
@@ -808,10 +880,12 @@ export default class PartyManager {
     leaderSelect.addEventListener("change", (e) => {
       leaderIdx = parseInt(e.target.value);
       updateEstimate();
+      saveState();
     });
     leaderPosterSelect.addEventListener("change", (e) => {
       leaderPosterIdx = parseInt(e.target.value);
       updateEstimate();
+      saveState();
     });
 
     const progressSection = _("div", {
