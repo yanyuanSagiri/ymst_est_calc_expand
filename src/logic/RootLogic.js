@@ -18,6 +18,7 @@ import PhotoEffectData from "../manager/PhotoEffectData";
 import ScoreCalculationType from "./ScoreCalculationType";
 import ScoreCalculator from "./ScoreCalculator";
 import MergedLiveSimulator from "./MergedLiveSimulator";
+import AutoPartyWorkerPool from "./AutoPartyWorkerPool";
 import FilterManager from "../manager/FilterManager";
 import SideMenuManager from "../manager/SideMenuManager";
 import GachaViewer, { GACHA_TYPE } from "../manager/GachaViewer";
@@ -2247,6 +2248,15 @@ export default class RootLogic {
     console.log(descriptionCount);
   }
 
+  _autoPartyWorkerPool = null;
+
+  stopAutoPartySearch() {
+    if (this._autoPartyWorkerPool) {
+      this._autoPartyWorkerPool.stop();
+      this._autoPartyWorkerPool = null;
+    }
+  }
+
   async handleAutoParty({
     selChars,
     selPosters,
@@ -2260,177 +2270,113 @@ export default class RootLogic {
       return null;
     }
 
-    const combos = (arr, k) => {
-      const result = [];
-      const backtrack = (start, path) => {
-        if (path.length === k) {
-          result.push(path.slice());
-          return;
-        }
-        for (let i = start; i < arr.length; i++) {
-          path.push(arr[i]);
-          backtrack(i + 1, path);
-          path.pop();
-        }
-      };
-      backtrack(0, []);
-      return result;
-    };
-
-    const perms = (arr, k) => {
-      const result = [];
-      const used = new Array(arr.length).fill(false);
-      const backtrack = (path) => {
-        if (path.length === k) {
-          result.push(path.slice());
-          return;
-        }
-        for (let i = 0; i < arr.length; i++) {
-          if (used[i]) continue;
-          used[i] = true;
-          path.push(arr[i]);
-          backtrack(path);
-          path.pop();
-          used[i] = false;
-        }
-      };
-      backtrack([]);
-      return result;
-    };
-
-    const remChars = selChars.filter((c) => c !== leader);
-    const remPosters = leaderPoster
-      ? selPosters.filter((p) => p !== leaderPoster)
-      : selPosters;
-    const charPerms = perms(selChars, 5);
-    const remPosterPerms = perms(remPosters, leaderPoster ? 4 : 5);
-    const accPerms = perms(selAccs, 5);
-
-    const notationId = this.senseNoteSelect
-      ? this.senseNoteSelect.value | 0
-      : 0;
-    const notationData = GameDb.SenseNotation[notationId];
-    const minCtPerPos = [Infinity, Infinity, Infinity, Infinity, Infinity];
-    if (notationData && notationData.Details) {
-      const lanes = [[], [], [], [], []];
-      notationData.Details.forEach((d) =>
-        lanes[d.Position - 1].push(d.TimingSecond),
-      );
-      lanes.forEach((lane, idx) => {
-        lane.sort((a, b) => a - b);
-        for (let i = 1; i < lane.length; i++) {
-          minCtPerPos[idx] = Math.min(minCtPerPos[idx], lane[i] - lane[i - 1]);
-        }
-      });
-    }
-
-    const getEffCt = (chara) => Math.min(...chara.senseAll.map((s) => s.ct));
-
-    const total = charPerms.length * remPosterPerms.length * accPerms.length;
-    let bestScore = -1;
-    let bestResult = null;
-    let count = 0;
-
-    console.log("autoParty perms:", {
-      charPerms: charPerms.length,
-      posterPerms: remPosterPerms.length,
-      accPerms: accPerms.length,
-      total,
-    });
+    const leaderIdx = selChars.indexOf(leader);
+    const leaderPosterIdx = leaderPoster ? selPosters.indexOf(leaderPoster) : -1;
 
     const extra = {
       albumLevel: this.appState.albumLevel,
       albumExtra: this.appState.albumExtra,
       leader: leader,
       type: ScoreCalculationType.Normal,
+      notationId: this.senseNoteSelect ? this.senseNoteSelect.value | 0 : 0,
+      highScoreEffects: root.appState.highScoreBuffManager
+        ? root.appState.highScoreBuffManager.currentActiveEffects()
+        : [],
+      theaterEffects: root.appState.theaterLevel
+        ? root.appState.theaterLevel.getEffects()
+        : [],
     };
 
-    const checkCtFilter = (members, enabled) => {
-      if (!enabled) return true;
-      for (let s = 0; s < 5; s++) {
-        if (
-          minCtPerPos[s] !== Infinity &&
-          getEffCt(members[s]) > minCtPerPos[s]
-        )
-          return false;
-      }
-      return true;
-    };
+    console.log("autoParty precise mode: Worker-based full ScoreCalculator search");
 
-    const doSearch = async (useCt) => {
-      bestScore = -1;
-      bestResult = null;
-      count = 0;
-      let errorCount = 0;
-      for (const cp of charPerms) {
-        const members = cp;
-        if (useCt && !checkCtFilter(members, true)) {
-          count += remPosterPerms.length * accPerms.length;
-          continue;
+    const charactersJson = selChars.map(c => c.toJSON());
+    const postersJson = selPosters.map(p => p.toJSON());
+    const accessoriesJson = selAccs.map(a => a.toJSON());
+
+    const starRankData = root.appState.characterStarRank
+      ? root.appState.characterStarRank.toJSON()
+      : {};
+
+    const theaterLevelData = root.appState.theaterLevel
+      ? root.appState.theaterLevel.toJSON()
+      : { Sirius: 0, Eden: 0, Gingaza: 0, Denki: 0 };
+
+    const highScoreEffectData = (extra.highScoreEffects || []).map(e => ({
+      id: e.data.Id,
+      level: e.level || 1,
+    }));
+
+    const albumExtraJson = (this.appState.albumExtra || []).map(pe => pe.toJSON());
+
+    const gameDbKeys = [
+      'Character', 'CharacterBase', 'CharacterLevel', 'CharacterBloomBonusGroup',
+      'CharacterStarRank', 'Sense', 'StarAct', 'StarActCondition', 'LeaderSense',
+      'Category', 'AlbumEffect', 'PhotoEffect', 'Effect', 'EffectTriggerCharacterBaseGroup',
+      'Poster', 'PosterAbility', 'Accessory', 'AccessoryEffect', 'RandomEffectGroup',
+      'SenseNotation', 'CircleSupportCompanyLevelDetail',
+    ];
+    const gameDbData = {};
+    gameDbKeys.forEach(key => { gameDbData[key] = GameDb[key]; });
+
+    const posterIndices = selPosters.map((_, i) => i).filter(i => i !== leaderPosterIdx);
+    const posterSlots = leaderPosterIdx === -1 ? 5 : 4;
+    const charPermCount = AutoPartyWorkerPool.permCount(selChars.length, 5);
+    const posterPermCount = AutoPartyWorkerPool.permCount(posterIndices.length, posterSlots);
+    const accPermCount = AutoPartyWorkerPool.permCount(selAccs.length, 5);
+    const totalCombinations = charPermCount * posterPermCount * accPermCount;
+
+    console.log("autoParty precise perms:", { charPermCount, posterPermCount, accPermCount, totalCombinations });
+
+    this._autoPartyWorkerPool = new AutoPartyWorkerPool();
+
+    try {
+      const result = await this._autoPartyWorkerPool.runSearch({
+        precise: true,
+        charactersJson,
+        postersJson,
+        accessoriesJson,
+        leaderIdx,
+        leaderPosterIdx,
+        starRankData,
+        albumLevel: extra.albumLevel,
+        albumExtraJson,
+        highScoreEffectData,
+        theaterLevelData,
+        notationId: extra.notationId,
+        gameDbData,
+        totalCombinations,
+        onProgress,
+      });
+
+      if (result.bestIndices) {
+        const { charIndices, posterIndices: ppIndices, accIndices } = result.bestIndices;
+        const members = charIndices.map(i => selChars[i]);
+        const leaderPos = charIndices.indexOf(leaderIdx);
+
+        const posters = ppIndices.map(i => {
+          const adjustedIdx = leaderPosterIdx >= 0 && i > leaderPosterIdx ? i - 1 : i;
+          return selPosters[adjustedIdx];
+        });
+        if (leaderPosterIdx >= 0) {
+          posters.splice(leaderPos, 0, selPosters[leaderPosterIdx]);
         }
 
-        const leaderPos = leaderPoster ? members.indexOf(leader) : -1;
+        const accessories = accIndices.map(i => selAccs[i]);
 
-        for (const pp of remPosterPerms) {
-          let posters;
-          if (leaderPoster) {
-            posters = [...pp];
-            posters.splice(leaderPos, 0, leaderPoster);
-          } else {
-            posters = pp;
-          }
-          for (const ac of accPerms) {
-            try {
-              const calc = new ScoreCalculator(members, posters, ac, extra);
-              calc.calc(null);
-
-              if (calc.result && calc.result.baseScore) {
-                const senseScore = calc.result.senseScore.reduce(
-                  (acc, cur) => acc + cur,
-                  0,
-                );
-                const starActScore = calc.result.starActScore.reduce(
-                  (acc, cur) => acc + cur,
-                  0,
-                );
-                const totalScore =
-                  calc.result.baseScore[3] + senseScore + starActScore;
-
-                if (totalScore > bestScore) {
-                  bestScore = totalScore;
-                  bestResult = { characters: members, posters, accessories: ac };
-                }
-              } else {
-                console.warn("calc.result missing:", calc.result);
-              }
-            } catch (err) {
-              errorCount++;
-              if (errorCount <= 3) {
-                console.error("calc error:", err, {members, posters, ac});
-              }
-            }
-
-            count++;
-            if (count % 200 === 0) {
-              onProgress(count, total, bestScore);
-              await new Promise((r) => setTimeout(r, 0));
-            }
-          }
-        }
+        console.log("autoParty precise done:", { bestScore: result.bestScore });
+        return {
+          characters: members,
+          posters,
+          accessories,
+          bestScore: result.bestScore,
+        };
       }
-    };
-
-    await doSearch(false);
-    // if (!bestResult) {
-    //   console.log("CT过滤后无结果，去掉CT限制重新搜索");
-    //   await doSearch(false);
-    // }
-
-    console.log("doSearch done:", { bestResult: !!bestResult, bestScore, total });
-    if (bestResult) {
-      bestResult.bestScore = bestScore;
+    } catch (err) {
+      console.error("autoParty precise worker error:", err);
     }
-    return bestResult;
+
+    console.log("autoParty precise: no result");
+    return null;
   }
 
   keikoFillChara() {

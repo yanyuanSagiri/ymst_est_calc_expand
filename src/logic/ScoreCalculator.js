@@ -457,6 +457,245 @@ export default class ScoreCalculator {
 
     ConstText.fillText();
   }
+  calcPure() {
+    if (this.extra.type === ScoreCalculationType.Keiko) {
+      this.extra.leader = this.members.find((i) => i);
+    }
+    const leader = this.extra.leader;
+    if (!leader) return;
+    this.liveSim.leader = leader;
+
+    this.members.forEach((i) => i?.resetEffects());
+
+    (this.extra.highScoreEffects || []).forEach((effect) => {
+      const range = effect.Range === "All" ? 1 : 5;
+      for (let idx = 0; idx < range; idx++) {
+        if (!effect.canTrigger(this, idx)) return;
+        effect.applyEffect(this, idx, StatBonusType.Other);
+      }
+    });
+
+    const passiveEffects = this.passiveEffects;
+    Object.values(GameDb.AlbumEffect)
+      .reverse()
+      .forEach((i) => {
+        if (this.extra.albumLevel < i.Level) return;
+        const effect = Effect.get(i.EffectMasterId, 1);
+        if (!effect.canTrigger(this, -1)) return;
+        passiveEffects.album.push({ effect, source: -1 });
+      });
+    const albumMemberTriggers = new Set([
+      "CharacterBase",
+      "Character",
+      "Company",
+      "Attribute",
+      "SenseType",
+      "CharacterBaseGroup",
+    ]);
+    this.extra.albumExtra.forEach((i) => {
+      if (!i.enabled) return;
+      const effect = i.effect;
+      const hasMemberTrigger = effect.Triggers.some((t) =>
+        albumMemberTriggers.has(t.Trigger),
+      );
+      if (hasMemberTrigger) {
+        const targets = [];
+        this.members.forEach((chara, idx) => {
+          if (!chara) return;
+          if (!effect.canTrigger(this, idx)) return;
+          if (effect.FireTimingType !== "Passive" && targets.length) return;
+          targets.push(idx);
+        });
+        if (targets.length === 0) return;
+        const originalRange = effect.Range;
+        if (originalRange === "All") effect.Range = "Self";
+        targets.forEach((idx) =>
+          effect.applyEffect(this, idx, StatBonusType.Album),
+        );
+        effect.Range = originalRange;
+        return;
+      }
+      if (effect.Triggers.length === 0 || effect.canTrigger(this, -1)) {
+        passiveEffects.album.push({ effect, source: -1 });
+      }
+    });
+    passiveEffects.album.forEach((i) =>
+      i.effect.applyEffect(this, i.source, StatBonusType.Album),
+    );
+
+    this.liveSim.setStarActRequirements(leader.staract.actualRequirements);
+    this.members.forEach((chara, idx) => {
+      if (!chara) return;
+      this.liveSim.skipSense[idx] = chara.data.CharacterBaseMasterId === 401;
+      chara.bloomBonusEffects.forEach((effect) =>
+        effect.applyEffect(this, idx, StatBonusType.Album),
+      );
+
+      const poster = this.posters[idx];
+      poster?.abilities.forEach((ability) => {
+        if (!ability.unlocked) return;
+        if (ability.data.Type === "Leader" && this.members[idx] !== leader)
+          return;
+        const abilityEffectBranch = ability.getActiveBranch(this.liveSim);
+        if (!abilityEffectBranch) return;
+        abilityEffectBranch.BranchEffects.forEach((effect) => {
+          effect = Effect.get(
+            effect.EffectMasterId,
+            ability.level + ability.release,
+          );
+          if (
+            effect.FireTimingType !== "Passive" &&
+            effect.FireTimingType !== "StartLive"
+          )
+            return;
+          if (!effect.canTrigger(this, idx)) return;
+          effect.applyEffect(this, idx, StatBonusType.Poster);
+        });
+      });
+
+      const accessory = this.accessories[idx];
+      for (let effect of accessory?.mainEffects ?? []) {
+        effect = effect.effect;
+        if (
+          effect.FireTimingType !== "Passive" &&
+          effect.FireTimingType !== "StartLive"
+        )
+          continue;
+        if (!effect.canTrigger(this, idx)) continue;
+        effect.applyEffect(this, idx, StatBonusType.Accessory);
+      }
+      if (accessory?.randomEffect) {
+        let effect = accessory.randomEffect.effect;
+        if (
+          effect.canTrigger(this, idx) &&
+          (effect.FireTimingType === "Passive" ||
+            effect.FireTimingType === "StartLive")
+        ) {
+          effect.applyEffect(this, idx, StatBonusType.Accessory);
+        }
+      }
+    });
+    this.liveSim.setStarActRequirements(leader.staract.actualRequirements);
+    if (leader.staract.data.BranchCondition1 === "StorageSenseLightCount") {
+      this.liveSim.maxStockCount =
+        leader.staract.data.Branches.find((i) => i.JudgeType1 === "MoreThan")
+          ?.Parameter1 ?? 0;
+      this.liveSim.stockType = leader.staract.data.ConditionValue1;
+    }
+
+    if (this.extra.type !== ScoreCalculationType.Keiko) {
+      const notationId =
+        this.extra.notationId !== undefined
+          ? this.extra.notationId
+          : 0;
+      const notation = GameDb.SenseNotation[notationId];
+      notation?.Buffs?.forEach((notationBuff) => {
+        for (let i = 0; i < 5; i++) {
+          if (!this.members[i]) continue;
+          let isBuffTarget = false;
+          switch (notationBuff.Type) {
+            case "None": { isBuffTarget = true; break; }
+            case "Attribute": {
+              isBuffTarget = this.members[i].isCharacterAttribute(notationBuff.TargetValue);
+              break;
+            }
+            case "Company": {
+              isBuffTarget = this.members[i].isCharacterInCompany(notationBuff.TargetValue);
+              break;
+            }
+            case "Character": {
+              isBuffTarget = this.members[i].Id === notationBuff.TargetValue;
+              break;
+            }
+          }
+          if (notationBuff.TargetValue === undefined) isBuffTarget = true;
+          if (isBuffTarget) {
+            this.stat.buffAfterCalc[i][StatBonus[notationBuff.StatusType]] +=
+              notationBuff.BuffValue * 100;
+          }
+        }
+      });
+    }
+
+    this.memberMatchingCategories = this.members.map((_) => ({}));
+    if (this.extra.type !== ScoreCalculationType.Keiko)
+      leader.leaderSense.Details.forEach((detail) => {
+        const effect = Effect.get(detail.EffectMasterId, 1);
+        this.members.forEach((chara, idx) => {
+          if (!chara) return;
+          const charaCategories = chara.categories;
+          const matchedCategories = [];
+          for (let i = 0; i < detail.Conditions.length; i++) {
+            for (let j = 1; j < 6; j++) {
+              const testCategory = detail.Conditions[i][`CategoryMasterId${j}`];
+              if (testCategory === undefined) break;
+              if (charaCategories.indexOf(testCategory) === -1) return;
+              matchedCategories.push(testCategory);
+            }
+          }
+          matchedCategories.forEach(
+            (category) => (this.memberMatchingCategories[idx][category] = true),
+          );
+          effect.applyEffect(this, idx, StatBonusType.Actor);
+        });
+      });
+
+    (this.extra.theaterEffects || []).forEach((effect) =>
+      effect.applyEffect(this, -1, StatBonusType.Theater),
+    );
+
+    let statExtra = 100;
+    if (this.extra.starRankScoreBonus) {
+      statExtra = 100 + this.extra.starRankScoreBonus * 30;
+    }
+
+    this.stat.calc();
+
+    const baseScore = [0.95, 0.97, 1, 1.05].map((coef) =>
+      Math.floor(
+        Math.floor((this.stat.finalTotal * statExtra) / 100) *
+          10 *
+          (1 + passiveEffects.baseScoreUp / 10000) *
+          coef,
+      ),
+    );
+    const senseScore = [];
+    const starActScore = [];
+
+    this.result = {
+      baseScore,
+      senseScore,
+      starActScore,
+      starActCount: 0,
+    };
+
+    if (this.extra.type === ScoreCalculationType.Keiko) {
+      this.members.forEach((chara, idx) => {
+        if (!chara) return;
+        const multiplier = chara.sense.scoreUp;
+        const finalStat = this.stat.final[idx].total;
+        const score = Math.floor((finalStat * statExtra * multiplier) / 100);
+        this.result.senseScore.push(score);
+      });
+      return;
+    }
+
+    if (this.members.some((i) => !i)) return;
+
+    this.liveSim.baseScore = baseScore[3];
+
+    if (this.extra.skipSimulation) {
+      this.liveSim.setStarActRequirements(leader.staract.actualRequirements);
+      return;
+    }
+
+    this.liveSim.runSimulation(null);
+
+    this.result.totalScore =
+      baseScore[3] +
+      this.result.senseScore.reduce((a, b) => a + b, 0) +
+      this.result.starActScore.reduce((a, b) => a + b, 0);
+  }
   createStatDetailsTable() {
     let rowNumber;
     const buffPercentageDisplay = (stat, idx, j, type) => {

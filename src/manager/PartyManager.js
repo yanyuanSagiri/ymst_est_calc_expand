@@ -479,9 +479,11 @@ export default class PartyManager {
         padding: "20px",
         borderRadius: "8px",
         boxShadow: "0 4px 20px rgba(0,0,0,0.3)",
-        maxHeight: "80vh",
+        maxHeight: "85vh",
         overflowY: "auto",
-        minWidth: "400px",
+        minWidth: "600px",
+        width: "70vw",
+        maxWidth: "900px",
         zIndex: 10001,
       },
     });
@@ -521,7 +523,26 @@ export default class PartyManager {
       try { localStorage.setItem("autoPartyState", JSON.stringify(data)); } catch (_) {}
     };
 
-    const title = _("h3", { style: { marginTop: 0 } }, [
+    const closeBtn = _("span", {
+      style: {
+        position: "absolute",
+        top: "18px",
+        right: "15px",
+        cursor: "pointer",
+        fontSize: "28px",
+        fontWeight: "bold",
+        color: "#666",
+        lineHeight: "1",
+      },
+      event: {
+        click: () => {
+          if (root.stopAutoPartySearch) root.stopAutoPartySearch();
+          overlay.remove();
+        },
+      },
+    }, [_("text", "×")]);
+
+    const title = _("h3", { style: { marginTop: 0, paddingRight: "30px" } }, [
       _("text", "自动配队 - 选择候选项"),
     ]);
 
@@ -597,6 +618,38 @@ export default class PartyManager {
       ]),
     );
 
+    const estInfo = _("div", {
+      style: {
+        marginBottom: "15px",
+        padding: "10px",
+        background: "#fff3cd",
+        borderRadius: "4px",
+      },
+    });
+    const estText = _("span", {}, [_("text", "预估遍历次数: 计算中...")]);
+    estInfo.appendChild(estText);
+
+    const perm = (n, k) =>
+      n < k
+        ? 0
+        : Array.from({ length: k }, (_, i) => n - i).reduce(
+          (a, b) => a * b,
+          1,
+        );
+
+    const updateEstimate = () => {
+      const charCount = selectedChars.filter(Boolean).length;
+      const posterCount = selectedPosters.filter(Boolean).length;
+      const accCount = selectedAccs.filter(Boolean).length;
+      const posterPool = leaderPosterIdx >= 0 ? posterCount - 1 : posterCount;
+      const charComb = perm(charCount, 5);
+      const posterSlots = leaderPosterIdx === -1 ? 5 : 4;
+      const posterComb = perm(posterPool, posterSlots);
+      const accComb = perm(accCount, 5);
+      const total = charComb * posterComb * accComb;
+      estText.textContent = `预估遍历次数: ${total.toLocaleString()} (角色${charComb} × 海报${posterComb} × 饰品${accComb})`;
+    };
+
     const charSection = _("div", { style: { marginBottom: "15px" } });
     charSection.appendChild(
       _("div", { style: { fontWeight: "bold", marginBottom: "8px" } }, [
@@ -614,6 +667,7 @@ export default class PartyManager {
               selectedChars[cb.getAttribute("data-chara")] = e.target.checked;
             });
           refreshLeaderOptions();
+          updateEstimate();
           saveState();
         },
       },
@@ -624,9 +678,9 @@ export default class PartyManager {
     const charGrid = _("div", {
       style: {
         display: "grid",
-        gridTemplateColumns: "repeat(5, 1fr)",
+        gridTemplateColumns: "repeat(8, 1fr)",
         gap: "4px",
-        maxHeight: "200px",
+        maxHeight: "280px",
         overflowY: "auto",
         border: "1px solid #ddd",
         padding: "8px",
@@ -642,6 +696,7 @@ export default class PartyManager {
           change: (e) => {
             selectedChars[idx] = e.target.checked;
             refreshLeaderOptions();
+            updateEstimate();
             saveState();
           },
         },
@@ -653,6 +708,7 @@ export default class PartyManager {
         cb.checked = !cb.checked;
         selectedChars[idx] = cb.checked;
         refreshLeaderOptions();
+        updateEstimate();
         saveState();
       });
       const wrapper = _(
@@ -689,6 +745,7 @@ export default class PartyManager {
                 e.target.checked;
             });
           refreshLeaderOptions();
+          updateEstimate();
           saveState();
         },
       },
@@ -699,9 +756,9 @@ export default class PartyManager {
     const posterGrid = _("div", {
       style: {
         display: "grid",
-        gridTemplateColumns: "repeat(5, 1fr)",
+        gridTemplateColumns: "repeat(8, 1fr)",
         gap: "4px",
-        maxHeight: "200px",
+        maxHeight: "280px",
         overflowY: "auto",
         border: "1px solid #ddd",
         padding: "8px",
@@ -717,6 +774,7 @@ export default class PartyManager {
           change: (e) => {
             selectedPosters[idx] = e.target.checked;
             refreshLeaderOptions();
+            updateEstimate();
             saveState();
           },
         },
@@ -728,6 +786,7 @@ export default class PartyManager {
         cb.checked = !cb.checked;
         selectedPosters[idx] = cb.checked;
         refreshLeaderOptions();
+        updateEstimate();
         saveState();
       });
       const wrapper = _(
@@ -762,6 +821,7 @@ export default class PartyManager {
               cb.checked = e.target.checked;
               selectedAccs[cb.getAttribute("data-acc")] = e.target.checked;
             });
+          updateEstimate();
           saveState();
         },
       },
@@ -772,9 +832,9 @@ export default class PartyManager {
     const accGrid = _("div", {
       style: {
         display: "grid",
-        gridTemplateColumns: "repeat(5, 1fr)",
+        gridTemplateColumns: "repeat(8, 1fr)",
         gap: "4px",
-        maxHeight: "200px",
+        maxHeight: "280px",
         overflowY: "auto",
         border: "1px solid #ddd",
         padding: "8px",
@@ -789,6 +849,7 @@ export default class PartyManager {
         event: {
           change: (e) => {
             selectedAccs[idx] = e.target.checked;
+            updateEstimate();
             saveState();
           },
         },
@@ -799,6 +860,7 @@ export default class PartyManager {
       icon.addEventListener("click", () => {
         cb.checked = !cb.checked;
         selectedAccs[idx] = cb.checked;
+        updateEstimate();
         saveState();
       });
       const wrapper = _(
@@ -819,63 +881,28 @@ export default class PartyManager {
 
     refreshLeaderOptions();
     if (savedLeaderId != null) {
-      if (leaderSelect.querySelector(`option[value="${leaderIdx}"]`)) {
-        leaderSelect.value = leaderIdx;
+      const li = characters.findIndex((c) => c.data.Id === savedLeaderId);
+      if (li >= 0 && selectedChars[li]) {
+        leaderIdx = li;
+        if (leaderSelect.querySelector(`option[value="${li}"]`)) {
+          leaderSelect.value = li;
+        }
       }
     }
     if (savedLeaderPosterId != null) {
-      if (leaderPosterSelect.querySelector(`option[value="${leaderPosterIdx}"]`)) {
-        leaderPosterSelect.value = leaderPosterIdx;
+      const pi = posters.findIndex((p) => p.data.Id === savedLeaderPosterId);
+      if (pi >= 0 && selectedPosters[pi]) {
+        leaderPosterIdx = pi;
+        if (leaderPosterSelect.querySelector(`option[value="${pi}"]`)) {
+          leaderPosterSelect.value = pi;
+        }
       }
     } else if (savedChars.size > 0 && savedLeaderPosterId === null) {
       leaderPosterSelect.value = -1;
+      leaderPosterIdx = -1;
     }
     leaderIdx = parseInt(leaderSelect.value) || 0;
     leaderPosterIdx = parseInt(leaderPosterSelect.value) || -1;
-
-    const estInfo = _("div", {
-      style: {
-        marginBottom: "15px",
-        padding: "10px",
-        background: "#fff3cd",
-        borderRadius: "4px",
-      },
-    });
-    const estText = _("span", {}, [_("text", "预估遍历次数: 计算中...")]);
-    estInfo.appendChild(estText);
-
-    const updateEstimate = () => {
-      const charCount = Array.from(selectedChars).filter(Boolean).length;
-      const posterCount = Array.from(selectedPosters).filter(Boolean).length;
-      const accCount = Array.from(selectedAccs).filter(Boolean).length;
-      const comb = (n, k) =>
-        n < k
-          ? 0
-          : Array.from({ length: k }, (_, i) => n - i).reduce(
-            (a, b) => a * b,
-            0,
-          ) /
-            Array.from({ length: k }, (_, i) => i + 1).reduce(
-              (a, b) => a * b,
-              0,
-            );
-      const perm = (n, k) =>
-        n < k
-          ? 0
-          : Array.from({ length: k }, (_, i) => n - i).reduce(
-            (a, b) => a * b,
-            0,
-          );
-      const charComb = perm(charCount, 5);
-      const posterComb =
-        leaderPosterIdx === -1
-          ? perm(posterCount, 5)
-          : perm(posterCount - 1, 4);
-      const accComb = perm(accCount, 5);
-      const total = charComb * posterComb * accComb;
-      estText.textContent = `预估遍历次数: ${total.toLocaleString()} (角色${charComb} × 海报${posterComb} × 饰品${accComb})`;
-    };
-    updateEstimate();
 
     leaderSelect.addEventListener("change", (e) => {
       leaderIdx = parseInt(e.target.value);
@@ -933,6 +960,7 @@ export default class PartyManager {
       value: "取消",
       event: {
         click: () => {
+          if (root.stopAutoPartySearch) root.stopAutoPartySearch();
           overlay.remove();
         },
       },
@@ -970,6 +998,7 @@ export default class PartyManager {
               selAccs,
               leader,
               leaderPoster,
+              searchMode: 'precise',
               onProgress: (current, total, bestScore) => {
                 const pct = ((current / total) * 100).toFixed(1);
                 progressFill.style.width = pct + "%";
@@ -1025,6 +1054,7 @@ export default class PartyManager {
     btnRow.appendChild(startBtn);
 
     dialog.appendChild(title);
+    dialog.appendChild(closeBtn);
     dialog.appendChild(leaderSection);
     dialog.appendChild(charSection);
     dialog.appendChild(posterSection);
@@ -1034,9 +1064,7 @@ export default class PartyManager {
     dialog.appendChild(resultSection);
     dialog.appendChild(btnRow);
     overlay.appendChild(dialog);
-    overlay.addEventListener("click", (e) => {
-      if (e.target === overlay) overlay.remove();
-    });
+    updateEstimate();
     document.body.appendChild(overlay);
   }
 
