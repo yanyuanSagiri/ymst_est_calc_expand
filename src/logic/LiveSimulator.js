@@ -312,7 +312,12 @@ export default class LiveSimulator {
           this.calc.accessories,
           this.calc.extra,
         );
-        calc.calc(node);
+        if (node) {
+          calc.calc(node);
+        } else {
+          calc.calcPure();
+          this._delayedResult = calc.result;
+        }
         return true;
       }
     }

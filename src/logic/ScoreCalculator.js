@@ -689,12 +689,16 @@ export default class ScoreCalculator {
       return;
     }
 
-    this.liveSim.runSimulation(null);
+    const canceled = this.liveSim.runSimulation(null);
 
-    this.result.totalScore =
-      baseScore[3] +
-      this.result.senseScore.reduce((a, b) => a + b, 0) +
-      this.result.starActScore.reduce((a, b) => a + b, 0);
+    if (canceled && this.liveSim._delayedResult) {
+      this.result = this.liveSim._delayedResult;
+    } else {
+      this.result.totalScore =
+        baseScore[3] +
+        this.result.senseScore.reduce((a, b) => a + b, 0) +
+        this.result.starActScore.reduce((a, b) => a + b, 0);
+    }
   }
   createStatDetailsTable() {
     let rowNumber;

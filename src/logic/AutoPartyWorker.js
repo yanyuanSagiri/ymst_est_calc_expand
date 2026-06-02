@@ -6,11 +6,13 @@ import AccessoryData from "../accessory/AccessoryData.js";
 import AccessoryEffectData from "../accessory/AccessoryEffectData.js";
 import ScoreCalculator from "./ScoreCalculator.js";
 import ScoreCalculationType from "./ScoreCalculationType.js";
+import LiveSimulator from "./LiveSimulator.js";
 import PhotoEffectData from "../manager/PhotoEffectData.js";
 import Effect from "../effect/Effect.js";
 import ConstText from "../db/ConstText.js";
 import GameDb from "../db/GameDb.js";
 import CharacterStarRankData from "../character/CharacterStarRankData.js";
+import StarActData from "../character/StarActData.js";
 import TheaterLevelData from "../manager/TheaterLevelData.js";
 
 ConstText.language = 'zh';
@@ -85,9 +87,23 @@ function runSearch(params) {
 
   const selChars = charactersJson.map(d => {
     const c = CharacterData.fromJSON(d, null);
-    c.sense.level = c.senselv;
-    c.staract.level = c.bloom;
+    c.senseAll.forEach(s => { s.level = c.senselv; });
+    if (c.awaken && c.data.AwakenStarActMasterId) {
+      c.staract = new StarActData(c.data.AwakenStarActMasterId, c.bloom);
+    } else {
+      c.staract.level = c.bloom;
+    }
     c.updateBloomBonus();
+    c.resetEffects();
+    c.bloomBonusEffects.forEach(effect => {
+      switch (effect.Type) {
+        case 'SenseRecastDown': return c.senseAll.forEach(i => i.recastDown.push(effect.activeEffect.Value));
+        case 'DecreaseRequireSupportLight': return c.staract.requireDecrease[0] += effect.activeEffect.Value;
+        case 'DecreaseRequireControlLight': return c.staract.requireDecrease[1] += effect.activeEffect.Value;
+        case 'DecreaseRequireAmplificationLight': return c.staract.requireDecrease[2] += effect.activeEffect.Value;
+        case 'DecreaseRequireSpecialLight': return c.staract.requireDecrease[3] += effect.activeEffect.Value;
+      }
+    });
     return c;
   });
   const selPosters = postersJson.map(d => {
@@ -111,11 +127,15 @@ function runSearch(params) {
   const selAccs = accessoriesJson.map(d => {
     const acc = new AccessoryData(d[0], null);
     acc.level = d[1];
-    acc.mainEffects.forEach(i => { i.level = acc.level; });
+    acc.mainEffects.forEach(i => {
+      i.level = acc.level;
+      i.effect.level = acc.level;
+    });
     if (d[2] && acc.data.RandomEffectGroups.length > 0) {
       acc.randomEffectId = String(d[2]);
       acc.randomEffect = new AccessoryEffectData(acc.randomEffectId, null);
       acc.randomEffect.level = acc.level;
+      acc.randomEffect.effect.level = acc.level;
     }
     return acc;
   });
@@ -204,6 +224,7 @@ function runSearch(params) {
 
       const calcExtra = { ...extra, leader };
       const calc = new ScoreCalculator(members, posters, accessories, calcExtra);
+      LiveSimulator.saDelayLastTiming = null;
       calc.calcPure();
 
       if (calc.result) {
