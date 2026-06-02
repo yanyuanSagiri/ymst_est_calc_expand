@@ -183,7 +183,7 @@ function runSearch(params) {
     const pp = posterPerms[ppIdx];
     const ap = accPerms[acIdx];
 
-    if (!isPosterPermValid(pp, leaderPosterIdx)) {
+    if (!isPosterPermValid(pp, leaderPosterIdx, selPosters)) {
       count++;
       continue;
     }
@@ -244,14 +244,20 @@ function runSearch(params) {
   STATE.isRunning = false;
 }
 
-function isPosterPermValid(posterPerm, leaderPosterIdx) {
-  const usedIds = new Set();
-  if (leaderPosterIdx >= 0) usedIds.add(leaderPosterIdx);
+function isPosterPermValid(posterPerm, leaderPosterIdx, allPosters) {
+  const usedRestrictGroups = new Set();
+  if (leaderPosterIdx >= 0) {
+    const leaderRestrictId = allPosters[leaderPosterIdx]?.data?.OrganizeRestrictGroupId;
+    if (leaderRestrictId) usedRestrictGroups.add(leaderRestrictId);
+  }
   for (let i = 0; i < posterPerm.length; i++) {
     const idx = posterPerm[i];
     if (idx < 0) continue;
-    if (usedIds.has(idx)) return false;
-    usedIds.add(idx);
+    const restrictId = allPosters[idx]?.data?.OrganizeRestrictGroupId;
+    if (restrictId) {
+      if (usedRestrictGroups.has(restrictId)) return false;
+      usedRestrictGroups.add(restrictId);
+    }
   }
   return true;
 }
