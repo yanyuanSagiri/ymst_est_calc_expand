@@ -2194,46 +2194,103 @@ export default class RootLogic {
     let currentScore = getScore();
     const selectedIndices = new Set();
     const limit = this.nonPersistentState.maxAlbumPages * 6;
-    let isUsedDescriptionList = [];
 
-    for (let step = 0; step < limit; step++) {
+    // 步长为 2，每次选择 2 张照片进行评估
+    for (let step = 0; step < limit; step += 2) {
       let bestGain = -1;
-      let bestIndex = -1;
-      isUsedDescriptionList = [];
+      let bestPairIndices = null;
 
-      btn.value = `Calculating... ${step}/${limit}`;
+      btn.value = `筛选中... ${step}/${limit}`;
       if (step % 5 === 0) {
         await new Promise((r) => setTimeout(r, 0));
       }
 
+      const candidates = [];
+      const candidateDescriptions = new Set();
       for (let i = 0; i < items.length; i++) {
         if (selectedIndices.has(i)) continue;
         if (items[i].level < 10) continue;
-
         const description = items[i].description;
-        if (isUsedDescriptionList.includes(description)) continue;
-        isUsedDescriptionList.push(description);
-
-        items[i].enabled = true;
-        const score = getScore();
-        const gain = score - currentScore;
-
-        if (gain > bestGain) {
-          bestGain = gain;
-          bestIndex = i;
-        }
-        items[i].enabled = false;
+        if (candidateDescriptions.has(description)) continue;
+        candidateDescriptions.add(description);
+        candidates.push(i);
       }
 
-      if (bestIndex !== -1 && bestGain >= 0) {
-        items[bestIndex].enabled = true;
+      for (let ci = 0; ci < candidates.length; ci++) {
+        for (let cj = ci + 1; cj < candidates.length; cj++) {
+          const i = candidates[ci];
+          const j = candidates[cj];
+          items[i].enabled = true;
+          items[j].enabled = true;
+          const score = getScore();
+          const gain = score - currentScore;
+          if (gain > bestGain) {
+            bestGain = gain;
+            bestPairIndices = [i, j];
+          }
+          items[i].enabled = false;
+          items[j].enabled = false;
+        }
+      }
+
+      if (bestGain >= 0 && bestPairIndices) {
+        items[bestPairIndices[0]].enabled = true;
+        items[bestPairIndices[1]].enabled = true;
         currentScore += bestGain;
-        selectedIndices.add(bestIndex);
+        selectedIndices.add(bestPairIndices[0]);
+        selectedIndices.add(bestPairIndices[1]);
       } else {
         break;
       }
 
       if (selectedIndices.size >= items.length) break;
+    }
+
+    // 尝试用 1 张未选中的替换 1 张已选中的，寻找更高组合收益
+    const selectedArray = [...selectedIndices];
+    const unselectedArray = [];
+    for (let i = 0; i < items.length; i++) {
+      if (!selectedIndices.has(i) && items[i].level >= 10) {
+        unselectedArray.push(i);
+      }
+    }
+
+    let improved = true;
+    let twoOptRound = 0;
+    while (improved) {
+      improved = false;
+      twoOptRound++;
+      
+      for (let si = 0; si < selectedArray.length; si++) {
+        for (let ui = 0; ui < unselectedArray.length; ui++) {
+          const sIdx = selectedArray[si];
+          const uIdx = unselectedArray[ui];
+          
+          btn.value = `二次评估 轮数 ${twoOptRound}: ${si * unselectedArray.length + ui}/${selectedArray.length * unselectedArray.length}`;
+          if ((si * unselectedArray.length + ui) % 10 === 0) {
+            await new Promise((r) => setTimeout(r, 0));
+          }
+          
+          // 尝试 swap: 禁用 sIdx, 启用 uIdx
+          items[sIdx].enabled = false;
+          items[uIdx].enabled = true;
+          const newScore = getScore();
+          
+          if (newScore > currentScore) {
+            // 找到提升，执行 swap
+            currentScore = newScore;
+            selectedArray[si] = uIdx;
+            unselectedArray[ui] = sIdx;
+            improved = true;
+            break;
+          } else {
+            // 恢复
+            items[sIdx].enabled = true;
+            items[uIdx].enabled = false;
+          }
+        }
+        if (improved) break;
+      }
     }
 
     btn.value = originalText;
