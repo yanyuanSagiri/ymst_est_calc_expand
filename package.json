@@ -39,7 +39,8 @@
     },
     "files": [
       "dist/**/*",
-      "electron/**/*"
+      "electron/**/*",
+      "tbm.ico"
     ],
     "win": {
       "target": "portable",

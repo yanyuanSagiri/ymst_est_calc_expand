@@ -1,5 +1,7 @@
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserWindow, nativeImage } = require("electron");
 const path = require("path");
+const iconPath = path.join(__dirname, "..", "tbm.ico");
+const appIcon = nativeImage.createFromPath(iconPath);
 
 let mainWindow;
 
@@ -7,6 +9,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
+    icon: appIcon,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
