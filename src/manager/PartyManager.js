@@ -490,7 +490,7 @@ export default class PartyManager {
 
     const savedChars = new Set();
     const savedPosters = new Set();
-    const savedAccs = new Set();
+    const savedAccs = new Map();
     let savedLeaderId = null;
     let savedLeaderPosterId = null;
 
@@ -500,7 +500,14 @@ export default class PartyManager {
         const data = JSON.parse(raw);
         (data.chars || []).forEach((id) => savedChars.add(id));
         (data.posters || []).forEach((id) => savedPosters.add(id));
-        (data.accs || []).forEach((id) => savedAccs.add(id));
+        (data.accs || []).forEach((item) => {
+          const sep = item.indexOf('_');
+          if (sep > 0) {
+            const idx = parseInt(item.substring(0, sep));
+            const id = parseInt(item.substring(sep + 1));
+            savedAccs.set(idx, id);
+          }
+        });
         savedLeaderId = data.leaderId ?? null;
         savedLeaderPosterId = data.leaderPosterId ?? null;
       }
@@ -516,7 +523,7 @@ export default class PartyManager {
       const data = {
         chars: characters.filter((_, i) => selectedChars[i]).map((c) => c.data.Id),
         posters: posters.filter((_, i) => selectedPosters[i]).map((p) => p.data.Id),
-        accs: accessories.filter((_, i) => selectedAccs[i]).map((a) => a.data.Id),
+        accs: accessories.map((a, i) => selectedAccs[i] ? `${i}_${a.data.Id}` : null).filter(Boolean),
         leaderId: characters[leaderIdx]?.data.Id ?? null,
         leaderPosterId: leaderPosterIdx >= 0 ? posters[leaderPosterIdx]?.data.Id ?? null : null,
       };
@@ -841,7 +848,7 @@ export default class PartyManager {
       },
     });
     accessories.forEach((a, idx) => {
-      const isChecked = savedAccs.has(a.data.Id) || savedAccs.size === 0;
+      const isChecked = (savedAccs.has(idx) && savedAccs.get(idx) === a.data.Id) || savedAccs.size === 0;
       selectedAccs[idx] = isChecked;
       const cb = _("input", {
         type: "checkbox",
