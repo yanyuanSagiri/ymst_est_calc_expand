@@ -29,6 +29,8 @@ export default class ScoreCalculator {
       attribute: [],
       companyMemberCount: {},
       companyMemberMaxCount: 0,
+      attributeCount: {},
+      attributeMaxCount: 0,
     };
     members.forEach((i) => {
       this.properties.company.push(i ? i.companyIdList : null);
@@ -37,9 +39,16 @@ export default class ScoreCalculator {
         this.properties.companyMemberCount[id] ??= 0;
         this.properties.companyMemberCount[id]++;
       });
+      i?.attributeList.forEach((id) => {
+        this.properties.attributeCount[id] ??= 0;
+        this.properties.attributeCount[id]++;
+      });
     });
     this.properties.companyMemberMaxCount = Object.values(
       this.properties.companyMemberCount,
+    ).reduce((max, c) => Math.max(max, c), 0);
+    this.properties.attributeMaxCount = Object.values(
+      this.properties.attributeCount,
     ).reduce((max, c) => Math.max(max, c), 0);
     // 双人卡统计所有剧团组合，取最小总剧团数
     const minimalCombinationCount = (list) => {
@@ -246,8 +255,9 @@ export default class ScoreCalculator {
             isBuffTarget = true;
           }
           if (isBuffTarget) {
-            this.stat.buffAfterCalc[i][StatBonus[notationBuff.StatusType]] +=
-              notationBuff.BuffValue * 100;
+            this.stat.buffAfterCalc[i][StatBonus[notationBuff.StatusType]].push(
+              notationBuff.BuffValue * 100,
+            );
           }
         }
       });
@@ -279,7 +289,6 @@ export default class ScoreCalculator {
           effect.applyEffect(this, idx, StatBonusType.Actor);
         });
       });
-
 
     // theater effect
     const theaterEffects = root.appState.theaterLevel.getEffects();
@@ -585,22 +594,27 @@ export default class ScoreCalculator {
 
     if (this.extra.type !== ScoreCalculationType.Keiko) {
       const notationId =
-        this.extra.notationId !== undefined
-          ? this.extra.notationId
-          : 0;
+        this.extra.notationId !== undefined ? this.extra.notationId : 0;
       const notation = GameDb.SenseNotation[notationId];
       notation?.Buffs?.forEach((notationBuff) => {
         for (let i = 0; i < 5; i++) {
           if (!this.members[i]) continue;
           let isBuffTarget = false;
           switch (notationBuff.Type) {
-            case "None": { isBuffTarget = true; break; }
+            case "None": {
+              isBuffTarget = true;
+              break;
+            }
             case "Attribute": {
-              isBuffTarget = this.members[i].isCharacterAttribute(notationBuff.TargetValue);
+              isBuffTarget = this.members[i].isCharacterAttribute(
+                notationBuff.TargetValue,
+              );
               break;
             }
             case "Company": {
-              isBuffTarget = this.members[i].isCharacterInCompany(notationBuff.TargetValue);
+              isBuffTarget = this.members[i].isCharacterInCompany(
+                notationBuff.TargetValue,
+              );
               break;
             }
             case "Character": {
@@ -853,7 +867,7 @@ export default class ScoreCalculator {
                     ]),
                   ]),
                 ]),
-                this.stat.buffAfterCalc[idx].every((i) => i === 10000)
+                this.stat.buffAfterCalc[idx].every((i) => i.length === 0)
                   ? new Comment("CALC_TABLE_EXTRA_UP")
                   : _("tbody", {}, [
                     _(
@@ -868,25 +882,39 @@ export default class ScoreCalculator {
                         _("td", { className: "stat-value" }, [
                           _(
                             "text",
-                            `+${this.stat.buffAfterCalc[idx][StatBonus.Vocal] / 100 - 100}%`,
+                            this.stat.buffAfterCalc[idx][StatBonus.Vocal]
+                              .map((i) => `+${i / 100}%`)
+                              .join("\n"),
                           ),
                         ]),
                         _("td", { className: "stat-value" }, [
                           _(
                             "text",
-                            `+${this.stat.buffAfterCalc[idx][StatBonus.Expression] / 100 - 100}%`,
+                            this.stat.buffAfterCalc[idx][
+                              StatBonus.Expression
+                            ]
+                              .map((i) => `+${i / 100}%`)
+                              .join("\n"),
                           ),
                         ]),
                         _("td", { className: "stat-value" }, [
                           _(
                             "text",
-                            `+${this.stat.buffAfterCalc[idx][StatBonus.Concentration] / 100 - 100}%`,
+                            this.stat.buffAfterCalc[idx][
+                              StatBonus.Concentration
+                            ]
+                              .map((i) => `+${i / 100}%`)
+                              .join("\n"),
                           ),
                         ]),
                         _("td", { className: "stat-value" }, [
                           _(
                             "text",
-                            `+${this.stat.buffAfterCalc[idx][StatBonus.Performance] / 100 - 100}%`,
+                            this.stat.buffAfterCalc[idx][
+                              StatBonus.Performance
+                            ]
+                              .map((i) => `+${i / 100}%`)
+                              .join("\n"),
                           ),
                         ]),
                       ],
