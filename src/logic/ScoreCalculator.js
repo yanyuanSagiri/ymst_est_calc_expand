@@ -9,6 +9,7 @@ import Effect from "../effect/Effect";
 
 import _, { CREATE_FRAGMENT } from "../createElement";
 import removeAllChilds from "../removeAllChilds";
+import CharacterStat from "../character/CharacterStat"
 
 export default class ScoreCalculator {
   constructor(members, posters, accessories, extra) {
@@ -224,6 +225,7 @@ export default class ScoreCalculator {
         this.extra.notationId !== undefined
           ? this.extra.notationId
           : root.senseNoteSelect.value | 0;
+      const notationBuffValue = this.members.map(_ => [0, 0, 0, 0])
       const notation = GameDb.SenseNotation[notationId];
       notation?.Buffs?.forEach((notationBuff) => {
         for (let i = 0; i < 5; i++) {
@@ -255,12 +257,14 @@ export default class ScoreCalculator {
             isBuffTarget = true;
           }
           if (isBuffTarget) {
-            this.stat.buffAfterCalc[i][StatBonus[notationBuff.StatusType]].push(
-              notationBuff.BuffValue * 100,
-            );
+            notationBuffValue[i][StatBonus[notationBuff.StatusType]] += notationBuff.BuffValue * 100
           }
         }
       });
+      notationBuffValue.forEach((buff, i) => {
+        if (!buff.some(i => i > 0)) return
+        buff.forEach((buff, idx) => this.stat.buffAfterCalc[i][idx].push(buff))
+      })
     }
 
     // leader sense
@@ -595,6 +599,7 @@ export default class ScoreCalculator {
     if (this.extra.type !== ScoreCalculationType.Keiko) {
       const notationId =
         this.extra.notationId !== undefined ? this.extra.notationId : 0;
+      const notationBuffValue = this.members.map(_ => [0, 0, 0, 0])
       const notation = GameDb.SenseNotation[notationId];
       notation?.Buffs?.forEach((notationBuff) => {
         for (let i = 0; i < 5; i++) {
@@ -624,11 +629,14 @@ export default class ScoreCalculator {
           }
           if (notationBuff.TargetValue === undefined) isBuffTarget = true;
           if (isBuffTarget) {
-            this.stat.buffAfterCalc[i][StatBonus[notationBuff.StatusType]] +=
-              notationBuff.BuffValue * 100;
+            notationBuffValue[i][StatBonus[notationBuff.StatusType]] += notationBuff.BuffValue * 100
           }
         }
       });
+      notationBuffValue.forEach((buff, i) => {
+        if (!buff.some(i => i > 0)) return
+        buff.forEach((buff, idx) => this.stat.buffAfterCalc[i][idx].push(buff))
+      })
     }
 
     this.memberMatchingCategories = this.members.map((_) => ({}));
