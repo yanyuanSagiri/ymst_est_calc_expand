@@ -836,4 +836,154 @@ export default class LiveSimulator {
       (i) => ((i.skipCurrent = false), i.lastUntil >= time),
     );
   }
+
+  /**
+   * 轻量级模拟：只计算 starActCount，不计算分数
+   * 用于自动配队的第一阶段筛选
+   */
+  runSimulationCountOnly() {
+    this.prepare(null);
+    for (const timing of this.senseTiming) {
+      this.processTimingCountOnly(timing);
+    }
+    return this.calc.result.starActCount;
+  }
+
+  processTimingCountOnly(timing) {
+    this.currentTiming = timing.TimingSecond;
+    this.currentSenseType = "none";
+    this.purgeExpiredBuff(timing.TimingSecond);
+    this.phaseLog = [];
+
+    if (!this.trySenseCountOnly(timing)) {
+      this.resetCurrentLights();
+    }
+
+    if (this.tryStarActCountOnly()) {
+      this.resetCurrentLights();
+    }
+  }
+
+  /**
+   * 轻量级 StarAct 检查：只判断灯光是否满足条件并计数，不计算分数
+   * 不依赖 stat.final，因此 calcStarActCountOnly() 可以跳过 stat.calc()
+   */
+  tryStarActCountOnly() {
+    if (this.holdingLights.length < this.starActRequiredCount) {
+      return false;
+    }
+    this.overflownLightCount = this.holdingStockLights.length;
+    const idx = this.calc.members.indexOf(this.leader);
+    // 应用 StarAct 前置效果（可能影响灯光收集等机制）
+    this.leader.staract.data.PreEffects.forEach((effect) => {
+      effect = Effect.get(effect.EffectMasterId, this.leader.bloom);
+      effect.applyEffect(this.calc, idx, ScoreBonusType.StarAct);
+    });
+    const staractEffectBranch = this.leader.staract.getActiveBranch(this, idx);
+    if (staractEffectBranch) {
+      staractEffectBranch.BranchEffects.forEach((effect) => {
+        effect = Effect.get(effect.EffectMasterId, this.leader.bloom + 1);
+        if (effect.Type === "PerformanceDuplicateUp") {
+          effect.Range = "All";
+        }
+        effect.isLifeGuardBranch = staractEffectBranch.isLifeGuardBranch;
+        effect.applyEffect(this.calc, idx, ScoreBonusType.StarAct);
+      });
+    }
+    // 跳过分数计算，直接累加 starActCount
+    this.starActScoreIndex.push(this.calc.result.starActScore.length);
+    this.calc.result.starActScore.push(0);
+    this.calc.result.starActCount++;
+    this.applyPendingActions();
+    return true;
+  }
+
+  trySenseCountOnly(timing) {
+    let idx = timing.Position - 1;
+    if (this.skipSense[idx]) {
+      return true;
+    }
+    let chara = this.calc.members[idx];
+    if (chara.data.CharacterBaseMasterId === 102) {
+      chara = this.calc.members.find(
+        (i) => i && i.data.CharacterBaseMasterId === 101,
+      );
+      if (!chara) {
+        return false;
+      }
+      idx = this.calc.members.indexOf(chara);
+      this.purgeExpiredBuff(timing.TimingSecond);
+    }
+    const ct = this.senseCt[idx];
+    let activateSenseIndex = -1;
+    ct.some((ct, i) => {
+      const timeSinceLast = timing.TimingSecond - this.lastSenseTime[idx][i];
+      if (ct > timeSinceLast) {
+        return false;
+      }
+      activateSenseIndex = i;
+      return true;
+    });
+    if (activateSenseIndex === -1) {
+      return false;
+    }
+
+    this.applySenseEffectsCountOnly(idx, activateSenseIndex);
+
+    this.isDuringCombinationSense = true;
+    for (let otherSenseIdx of this.combinationSenseList[idx]) {
+      this.purgeExpiredBuff(timing.TimingSecond);
+      this.applySenseEffectsCountOnly(otherSenseIdx, 0);
+    }
+    this.isDuringCombinationSense = false;
+
+    this.lastSenseTime[timing.Position - 1][activateSenseIndex] =
+      timing.TimingSecond;
+
+    return true;
+  }
+
+  applySenseEffectsCountOnly(idx, activateSenseIndex) {
+    const chara = this.calc.members[idx];
+    const sense = chara.senseAll[activateSenseIndex];
+    if (sense.Type === "None") return;
+
+    sense.data.PreEffects.forEach((effect) => {
+      effect = Effect.get(effect.EffectMasterId, chara.senselv);
+      effect.applyEffect(this.calc, idx, ScoreBonusType.Sense);
+    });
+    const senseEffectBranch = sense.getActiveBranch(this);
+    if (senseEffectBranch) {
+      senseEffectBranch.BranchEffects.forEach((effect) => {
+        effect = Effect.get(effect.EffectMasterId, chara.senselv);
+        effect.isLifeGuardBranch = senseEffectBranch.isLifeGuardBranch;
+        effect.applyEffect(this.calc, idx, ScoreBonusType.Sense);
+      });
+    }
+
+    if (!this.isDuringCombinationSense) {
+      this.currentSenseType = sense.Type.toLowerCase();
+      const senseTypesOrdered = [
+        sense.Type,
+        ...chara.senseAll
+          .filter((s, i) => i !== activateSenseIndex && s.Type !== "None")
+          .map((s) => s.Type),
+      ];
+      const senseAddCount = sense.data.LightCount + this.senseExtraAmount[idx];
+      const addedLights = new Array(senseAddCount)
+        .fill(0)
+        .reduce((acc) => acc.concat(senseTypesOrdered), []);
+      senseTypesOrdered.forEach((i) =>
+        this.addSenseLight(i, idx, senseAddCount),
+      );
+      for (let light of this.senseExtraLights[idx]) {
+        let [addLightType, addLightAmount] = light;
+        this.addSenseLight(addLightType, idx, addLightAmount);
+        while (addLightAmount--) {
+          addedLights.push(addLightType);
+        }
+      }
+      this.processWrongLightToSp(idx, addedLights);
+    }
+  }
 }

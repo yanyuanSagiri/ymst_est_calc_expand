@@ -722,6 +722,121 @@ export default class ScoreCalculator {
         this.result.starActScore.reduce((a, b) => a + b, 0);
     }
   }
+
+  /**
+   * 轻量级计算：只计算 starActCount，不计算分数
+   * 用于自动配队的第一阶段筛选
+   *
+   * 与 calcPure() 的区别：
+   * - 不计算 Sense/StarAct 的具体分数
+   * - 只跟踪灯光收集和 StarAct 触发次数
+   * - 跳过评分系数（coef）和最终得分计算
+   */
+  calcStarActCountOnly() {
+    // ===== 阶段 1：确定队长 =====
+    const leader = this.extra.leader;
+    if (!leader) return 0; // 没有队长则无法演出
+    this.liveSim.leader = leader;
+
+    // ===== 阶段 2：重置角色效果 =====
+    // 清除上一次计算的临时效果，确保每次计算独立
+    this.members.forEach((i) => i?.resetEffects());
+
+    // ===== 阶段 3：设置 StarAct 需求灯光数 =====
+    // 根据队长的 StarAct 数据，确定需要收集多少灯光才能发动
+    this.liveSim.setStarActRequirements(leader.staract.actualRequirements);
+    // 储存型 StarAct：设置储存上限和储存灯光类型
+    if (leader.staract.data.BranchCondition1 === "StorageSenseLightCount") {
+      this.liveSim.maxStockCount =
+        leader.staract.data.Branches.find((i) => i.JudgeType1 === "MoreThan")
+          ?.Parameter1 ?? 0;
+      this.liveSim.stockType = leader.staract.data.ConditionValue1;
+    }
+
+    // ===== 阶段 4：应用每个角色的被动效果 =====
+    this.members.forEach((chara, idx) => {
+      if (!chara) return;
+      // 标记跳过 Sense 的角色（角色ID 401 = 特殊机制角色）
+      this.liveSim.skipSense[idx] = chara.data.CharacterBaseMasterId === 401;
+
+      // 4a. 开花效果（Bloom Bonus）
+      chara.bloomBonusEffects.forEach((effect) =>
+        effect.applyEffect(this, idx, StatBonusType.Album),
+      );
+
+      // 4b. 海报效果（Poster Abilities）
+      const poster = this.posters[idx];
+      poster?.abilities.forEach((ability) => {
+        if (!ability.unlocked) return;
+        // 队长专属海报只对队长生效
+        if (ability.data.Type === "Leader" && this.members[idx] !== leader)
+          return;
+        // 获取当前条件下激活的分支效果
+        const abilityEffectBranch = ability.getActiveBranch(this.liveSim);
+        if (!abilityEffectBranch) return;
+        abilityEffectBranch.BranchEffects.forEach((effect) => {
+          effect = Effect.get(
+            effect.EffectMasterId,
+            ability.level + ability.release,
+          );
+          // 只应用被动效果和演出开始效果
+          if (
+            effect.FireTimingType !== "Passive" &&
+            effect.FireTimingType !== "StartLive"
+          )
+            return;
+          if (!effect.canTrigger(this, idx)) return;
+          effect.applyEffect(this, idx, StatBonusType.Poster);
+        });
+      });
+      // 4c. 饰品效果（Accessory Effects）
+      const accessory = this.accessories[idx];
+      // 主效果
+      for (let effect of accessory?.mainEffects ?? []) {
+        effect = effect.effect;
+        if (
+          effect.FireTimingType !== "Passive" &&
+          effect.FireTimingType !== "StartLive"
+        )
+          continue;
+        if (!effect.canTrigger(this, idx)) continue;
+        effect.applyEffect(this, idx, StatBonusType.Accessory);
+      }
+      // 随机效果
+      if (accessory?.randomEffect) {
+        let effect = accessory.randomEffect.effect;
+        if (
+          effect.canTrigger(this, idx) &&
+          (effect.FireTimingType === "Passive" ||
+            effect.FireTimingType === "StartLive")
+        ) {
+          effect.applyEffect(this, idx, StatBonusType.Accessory);
+        }
+      }
+    });
+
+    // ===== 阶段 5：设置默认面板数值 =====
+    // 不执行完整的 stat.calc()，只给 stat.final 设置默认值（全 0）
+    // 部分效果（ScoreGainOnPerformance 等）在 Sense 发动时会访问 stat.final，
+    // 但 count-only 模式不关注具体分数，给默认值即可避免 TypeError
+    this.stat.final = this.members.map(() => CharacterStat.Zero());
+    this.stat.finalTotal = 0;
+
+    // ===== 阶段 6：初始化结果对象 =====
+    // starActCount 会在演出模拟中累加
+    this.result = {
+      baseScore: [0, 0, 0, 0],
+      senseScore: [],
+      starActScore: [],
+      starActCount: 0,
+    };
+
+    // ===== 阶段 7：运行轻量级演出模拟 =====
+    // 只计算灯光收集和 StarAct 触发，不计算具体分数
+    this.liveSim.baseScore = 0;
+    return this.liveSim.runSimulationCountOnly();
+  }
+
   createStatDetailsTable() {
     let rowNumber;
     const buffPercentageDisplay = (stat, idx, j, type) => {

@@ -636,6 +636,50 @@ export default class PartyManager {
     const estText = _("span", {}, [_("text", "预估遍历次数: 计算中...")]);
     estInfo.appendChild(estText);
 
+    const topNSection = _("div", {
+      style: {
+        marginBottom: "15px",
+        padding: "10px",
+        background: "#e3f2fd",
+        borderRadius: "4px",
+      },
+    });
+    topNSection.appendChild(
+      _("div", { style: { fontWeight: "bold", marginBottom: "8px" } }, [
+        _("text", "两阶段筛选设置"),
+      ]),
+    );
+    const topNCheckbox = _("input", {
+      type: "checkbox",
+      event: {
+        change: () => {
+          topNInput.disabled = !topNCheckbox.checked;
+        },
+      },
+    });
+    const topNInput = _("input", {
+      type: "number",
+      value: 100,
+      min: 10,
+      max: 10000,
+      step: 10,
+      disabled: true,
+      style: { width: "80px", marginLeft: "8px" },
+    });
+    topNSection.appendChild(
+      _("label", {}, [
+        topNCheckbox,
+        _("text", " 启用两阶段筛选（先计算 starActCount，再对 top-N 个候选计算完整分数）"),
+      ]),
+    );
+    topNSection.appendChild(
+      _("div", { style: { marginTop: "8px" } }, [
+        _("text", "Top-N: "),
+        topNInput,
+        _("text", " （推荐值：100-500，值越大结果越准确但计算量越大）"),
+      ]),
+    );
+
     const perm = (n, k) =>
       n < k
         ? 0
@@ -999,6 +1043,7 @@ export default class PartyManager {
             leaderPosterIdx === -1 ? null : posters[leaderPosterIdx];
 
           try {
+            const topN = topNCheckbox.checked ? (parseInt(topNInput.value) || 100) : 0;
             const result = await root.handleAutoParty({
               selChars,
               selPosters,
@@ -1006,6 +1051,7 @@ export default class PartyManager {
               leader,
               leaderPoster,
               searchMode: 'precise',
+              topN,
               onProgress: (current, total, bestScore) => {
                 const pct = ((current / total) * 100).toFixed(1);
                 progressFill.style.width = pct + "%";
@@ -1067,6 +1113,7 @@ export default class PartyManager {
     dialog.appendChild(posterSection);
     dialog.appendChild(accSection);
     dialog.appendChild(estInfo);
+    dialog.appendChild(topNSection);
     dialog.appendChild(progressSection);
     dialog.appendChild(resultSection);
     dialog.appendChild(btnRow);

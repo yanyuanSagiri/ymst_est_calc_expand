@@ -2320,6 +2320,7 @@ export default class RootLogic {
     selAccs,
     leader,
     leaderPoster,
+    topN = 0,
     onProgress,
   }) {
     if (selChars.length < 4 || selPosters.length < 4 || selAccs.length < 5) {
@@ -2402,6 +2403,7 @@ export default class RootLogic {
         notationId: extra.notationId,
         gameDbData,
         totalCombinations,
+        topN,
         onProgress,
       });
 

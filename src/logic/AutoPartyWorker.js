@@ -187,67 +187,193 @@ function runSearch(params) {
     chunkEnd: endIdx,
   });
 
+  const topN = params.topN || 0;
+  const enableFilter = topN > 0;
+
   let bestScore = -1;
   let bestIndices = null;
   let count = 0;
   let errorCount = 0;
   let lastReportTime = Date.now();
 
-  for (let i = startIdx; i < endIdx && !STATE.shouldStop; i++) {
-    const cpIdx = Math.floor(i / (posterPerms.length * accPerms.length));
-    const remaining = i % (posterPerms.length * accPerms.length);
-    const ppIdx = Math.floor(remaining / accPerms.length);
-    const acIdx = remaining % accPerms.length;
+  if (enableFilter) {
+    // 两阶段筛选：第一阶段计算 starActCount，第二阶段计算完整分数
+    const candidates = [];
+    let maxStarActCount = 0; // 候选池中最大的 starActCount
+    let minStarActCount = 0; // 最小阈值 = maxStarActCount - 1
 
-    const cp = charPerms[cpIdx];
-    const pp = posterPerms[ppIdx];
-    const ap = accPerms[acIdx];
+    for (let i = startIdx; i < endIdx && !STATE.shouldStop; i++) {
+      const cpIdx = Math.floor(i / (posterPerms.length * accPerms.length));
+      const remaining = i % (posterPerms.length * accPerms.length);
+      const ppIdx = Math.floor(remaining / accPerms.length);
+      const acIdx = remaining % accPerms.length;
 
-    if (!isPosterPermValid(pp, leaderPosterIdx, selPosters)) {
-      count++;
-      continue;
-    }
+      const cp = charPerms[cpIdx];
+      const pp = posterPerms[ppIdx];
+      const ap = accPerms[acIdx];
 
-    const members = cp.map(j => selChars[j]);
-    const leaderPos = cp.indexOf(leaderIdx);
-
-    const posters = pp.map(j => selPosters[j]);
-    if (leaderPosterIdx >= 0) {
-      posters.splice(leaderPos, 0, selPosters[leaderPosterIdx]);
-    }
-
-    const accessories = ap.map(j => selAccs[j]);
-
-    try {
-      const leader = members[leaderPos];
-      if (!leader) { count++; continue; }
-
-      const calcExtra = { ...extra, leader };
-      const calc = new ScoreCalculator(members, posters, accessories, calcExtra);
-      LiveSimulator.saDelayLastTiming = null;
-      calc.calcPure();
-
-      if (calc.result) {
-        const totalScore = calc.result.totalScore ||
-          (calc.result.baseScore[3] +
-            calc.result.senseScore.reduce((a, b) => a + b, 0) +
-            calc.result.starActScore.reduce((a, b) => a + b, 0));
-
-        if (totalScore > bestScore) {
-          bestScore = totalScore;
-          bestIndices = { charIndices: cp, posterIndices: pp.map(j => leaderPosterIdx >= 0 && j >= leaderPosterIdx ? j + 1 : j), accIndices: ap };
-        }
+      if (!isPosterPermValid(pp, leaderPosterIdx, selPosters)) {
+        count++;
+        continue;
       }
-    } catch (err) {
-      errorCount++;
-      if (errorCount <= 5) console.error("calcPure error:", err.message, err.stack?.split('\n')[1]);
+
+      const members = cp.map(j => selChars[j]);
+      const leaderPos = cp.indexOf(leaderIdx);
+      const posters = pp.map(j => selPosters[j]);
+      if (leaderPosterIdx >= 0) {
+        posters.splice(leaderPos, 0, selPosters[leaderPosterIdx]);
+      }
+      const accessories = ap.map(j => selAccs[j]);
+
+      try {
+        const leader = members[leaderPos];
+        if (!leader) { count++; continue; }
+
+        const calcExtra = { ...extra, leader };
+        const calc = new ScoreCalculator(members, posters, accessories, calcExtra);
+        LiveSimulator.saDelayLastTiming = null;
+        const starActCount = calc.calcStarActCountOnly();
+
+        // starActCount 低于阈值，直接跳过
+        if (starActCount < minStarActCount) {
+          count++;
+          continue;
+        }
+
+        // 更新最大值
+        if (starActCount > maxStarActCount) {
+          maxStarActCount = starActCount;
+          minStarActCount = maxStarActCount - 1;
+        }
+
+        candidates.push({
+          starActCount,
+          charPerm: cp,
+          posterPerm: pp,
+          accPerm: ap,
+        });
+
+        // 候选池满就裁剪
+        if (candidates.length >= topN) {
+          candidates.length = topN;
+        }
+      } catch (err) {
+        errorCount++;
+        if (errorCount <= 5) console.error("calcStarActCountOnly error:", err.message);
+      }
+
+      count++;
+      const now = Date.now();
+      if (now - lastReportTime > 200) {
+        self.postMessage({ type: 'PROGRESS', data: { current: count, total: endIdx - startIdx, bestScore: 0, errorCount, phase: 'counting' } });
+        lastReportTime = now;
+      }
     }
 
-    count++;
-    const now = Date.now();
-    if (now - lastReportTime > 200) {
-      self.postMessage({ type: 'PROGRESS', data: { current: count, total: endIdx - startIdx, bestScore, errorCount } });
-      lastReportTime = now;
+    const topCandidates = candidates.slice(0, topN);
+
+    console.log(`Worker ${workerId}: phase 1 done, top ${topCandidates.length} candidates selected`);
+
+    count = 0;
+    for (const candidate of topCandidates) {
+      if (STATE.shouldStop) break;
+
+      const cp = candidate.charPerm;
+      const pp = candidate.posterPerm;
+      const ap = candidate.accPerm;
+
+      const members = cp.map(j => selChars[j]);
+      const leaderPos = cp.indexOf(leaderIdx);
+      const posters = pp.map(j => selPosters[j]);
+      if (leaderPosterIdx >= 0) {
+        posters.splice(leaderPos, 0, selPosters[leaderPosterIdx]);
+      }
+      const accessories = ap.map(j => selAccs[j]);
+
+      try {
+        const leader = members[leaderPos];
+        if (!leader) { count++; continue; }
+
+        const calcExtra = { ...extra, leader };
+        const calc = new ScoreCalculator(members, posters, accessories, calcExtra);
+        LiveSimulator.saDelayLastTiming = null;
+        calc.calcPure();
+
+        if (calc.result) {
+          const totalScore = calc.result.totalScore ||
+            (calc.result.baseScore[3] +
+              calc.result.senseScore.reduce((a, b) => a + b, 0) +
+              calc.result.starActScore.reduce((a, b) => a + b, 0));
+
+          if (totalScore > bestScore) {
+            bestScore = totalScore;
+            bestIndices = { charIndices: cp, posterIndices: pp.map(j => leaderPosterIdx >= 0 && j >= leaderPosterIdx ? j + 1 : j), accIndices: ap };
+          }
+        }
+      } catch (err) {
+        errorCount++;
+        if (errorCount <= 5) console.error("calcPure error:", err.message);
+      }
+
+      count++;
+      self.postMessage({ type: 'PROGRESS', data: { current: count, total: topCandidates.length, bestScore, errorCount, phase: 'scoring' } });
+    }
+  } else {
+    // 原有逻辑：直接计算完整分数
+    for (let i = startIdx; i < endIdx && !STATE.shouldStop; i++) {
+      const cpIdx = Math.floor(i / (posterPerms.length * accPerms.length));
+      const remaining = i % (posterPerms.length * accPerms.length);
+      const ppIdx = Math.floor(remaining / accPerms.length);
+      const acIdx = remaining % accPerms.length;
+
+      const cp = charPerms[cpIdx];
+      const pp = posterPerms[ppIdx];
+      const ap = accPerms[acIdx];
+
+      if (!isPosterPermValid(pp, leaderPosterIdx, selPosters)) {
+        count++;
+        continue;
+      }
+
+      const members = cp.map(j => selChars[j]);
+      const leaderPos = cp.indexOf(leaderIdx);
+      const posters = pp.map(j => selPosters[j]);
+      if (leaderPosterIdx >= 0) {
+        posters.splice(leaderPos, 0, selPosters[leaderPosterIdx]);
+      }
+      const accessories = ap.map(j => selAccs[j]);
+
+      try {
+        const leader = members[leaderPos];
+        if (!leader) { count++; continue; }
+
+        const calcExtra = { ...extra, leader };
+        const calc = new ScoreCalculator(members, posters, accessories, calcExtra);
+        LiveSimulator.saDelayLastTiming = null;
+        calc.calcPure();
+
+        if (calc.result) {
+          const totalScore = calc.result.totalScore ||
+            (calc.result.baseScore[3] +
+              calc.result.senseScore.reduce((a, b) => a + b, 0) +
+              calc.result.starActScore.reduce((a, b) => a + b, 0));
+
+          if (totalScore > bestScore) {
+            bestScore = totalScore;
+            bestIndices = { charIndices: cp, posterIndices: pp.map(j => leaderPosterIdx >= 0 && j >= leaderPosterIdx ? j + 1 : j), accIndices: ap };
+          }
+        }
+      } catch (err) {
+        errorCount++;
+        if (errorCount <= 5) console.error("calcPure error:", err.message, err.stack?.split('\n')[1]);
+      }
+
+      count++;
+      const now = Date.now();
+      if (now - lastReportTime > 200) {
+        self.postMessage({ type: 'PROGRESS', data: { current: count, total: endIdx - startIdx, bestScore, errorCount } });
+        lastReportTime = now;
+      }
     }
   }
 

@@ -37,7 +37,8 @@ export default class AutoPartyWorkerPool {
               workerProgresses[i] = data.current;
               const aggregateCurrent = workerProgresses.reduce((s, v) => s + v, 0);
               if (onProgress) {
-                onProgress(aggregateCurrent, overallTotal, data.bestScore);
+                const progressTotal = data.phase === 'scoring' ? params.topN * workerCount : overallTotal;
+                onProgress(aggregateCurrent, progressTotal, data.bestScore);
               }
               break;
             }
@@ -72,7 +73,8 @@ export default class AutoPartyWorkerPool {
           data: {
             ...workerData,
             workerId: i,
-            totalWorkers: workerCount
+            totalWorkers: workerCount,
+            topN: params.topN || 0,
           }
         });
       }
