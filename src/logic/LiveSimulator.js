@@ -943,6 +943,14 @@ export default class LiveSimulator {
     return true;
   }
 
+  // count-only 模式下跳过的纯分数效果类型（不影响灯光收集）
+  static SCORE_ONLY_EFFECTS = new Set([
+    'PerformanceUp', 'VocalUp', 'ExpressionUp', 'ConcentrationUp',
+    'ScoreGainOnScore', 'ScoreGainOnPerformance', 'ScoreGainOnVocal',
+    'ScoreGainOnExpression', 'ScoreGainOnConcentration', 'ScoreGainOnSenseLight',
+    'PerformanceDuplicateUp',
+  ]);
+
   applySenseEffectsCountOnly(idx, activateSenseIndex) {
     const chara = this.calc.members[idx];
     const sense = chara.senseAll[activateSenseIndex];
@@ -950,12 +958,16 @@ export default class LiveSimulator {
 
     sense.data.PreEffects.forEach((effect) => {
       effect = Effect.get(effect.EffectMasterId, chara.senselv);
+      // 跳过纯分数效果，只应用影响灯光的效果
+      if (LiveSimulator.SCORE_ONLY_EFFECTS.has(effect.Type)) return;
       effect.applyEffect(this.calc, idx, ScoreBonusType.Sense);
     });
     const senseEffectBranch = sense.getActiveBranch(this);
     if (senseEffectBranch) {
       senseEffectBranch.BranchEffects.forEach((effect) => {
         effect = Effect.get(effect.EffectMasterId, chara.senselv);
+        // 跳过纯分数效果
+        if (LiveSimulator.SCORE_ONLY_EFFECTS.has(effect.Type)) return;
         effect.isLifeGuardBranch = senseEffectBranch.isLifeGuardBranch;
         effect.applyEffect(this.calc, idx, ScoreBonusType.Sense);
       });
