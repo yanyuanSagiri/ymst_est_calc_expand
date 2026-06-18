@@ -629,56 +629,106 @@ export default class PartyManager {
       style: {
         marginBottom: "15px",
         padding: "10px",
-        background: "#fff3cd",
+        background: "#e2fff6ff",
         borderRadius: "4px",
       },
     });
     const estText = _("span", {}, [_("text", "预估遍历次数: 计算中...")]);
     estInfo.appendChild(estText);
 
-    const topNSection = _("div", {
+    // Worker 数量设置
+    const maxCores = navigator.hardwareConcurrency || 4;
+    const workerSection = _("div", {
       style: {
         marginBottom: "15px",
         padding: "10px",
-        background: "#e3f2fd",
+        background: "#fff8e1",
         borderRadius: "4px",
       },
     });
-    topNSection.appendChild(
+    workerSection.appendChild(
       _("div", { style: { fontWeight: "bold", marginBottom: "8px" } }, [
-        _("text", "两阶段筛选设置"),
+        _("text", "并行计算设置"),
       ]),
     );
-    const topNCheckbox = _("input", {
-      type: "checkbox",
-      event: {
-        change: () => {
-          topNInput.disabled = !topNCheckbox.checked;
-        },
+    const workerInput = _("input", {
+      type: "number",
+      value: maxCores,
+      min: 1,
+      max: maxCores,
+      step: 1,
+      style: { width: "80px" },
+    });
+    workerSection.appendChild(
+      _("div", {}, [
+        _("text", "Worker 数量: "),
+        workerInput,
+        _("text", ` （当前设备最大核心数: ${maxCores}）`),
+      ]),
+    );
+    workerSection.appendChild(
+      _("div", {
+        style: { marginTop: "4px", fontSize: "12px", color: "#666" },
+      }, [
+        _("text", "建议使用全部核心数。减少数量可降低系统负载。"),
+      ]),
+    );
+
+    // WebGPU 加速选项
+    const gpuSection = _("div", {
+      style: {
+        marginBottom: "15px",
+        padding: "10px",
+        background: "#f3e5f5",
+        borderRadius: "4px",
       },
     });
-    const topNInput = _("input", {
-      type: "number",
-      value: 100,
-      min: 10,
-      max: 10000,
-      step: 10,
+    gpuSection.appendChild(
+      _("div", { style: { fontWeight: "bold", marginBottom: "8px" } }, [
+        _("text", "WebGPU 加速"),
+      ]),
+    );
+    const gpuCheckbox = _("input", {
+      type: "checkbox",
       disabled: true,
-      style: { width: "80px", marginLeft: "8px" },
     });
-    topNSection.appendChild(
+    const gpuStatus = _("span", { style: { marginLeft: "8px", fontSize: "12px", color: "#999" } }, [
+      _("text", "检测中..."),
+    ]);
+    gpuSection.appendChild(
       _("label", {}, [
-        topNCheckbox,
-        _("text", " 启用两阶段筛选（先计算 starActCount，再对 top-N 个候选计算完整分数）"),
+        gpuCheckbox,
+        _("text", " 使用 WebGPU 预筛选角色排列"),
+        gpuStatus,
       ]),
     );
-    topNSection.appendChild(
-      _("div", { style: { marginTop: "8px" } }, [
-        _("text", "Top-N: "),
-        topNInput,
-        _("text", " （推荐值：100-500，值越大结果越准确但计算量越大）"),
+    gpuSection.appendChild(
+      _("div", {
+        style: { marginTop: "4px", fontSize: "12px", color: "#666" },
+      }, [
+        _("text", "WebGPU 会在 CPU 计算前先用 GPU 快速评估角色排列的 StarAct 触发次数，减少需要遍历的组合数。"),
       ]),
     );
+
+    // 异步检测 WebGPU 支持
+    (async () => {
+      try {
+        if (!navigator.gpu) {
+          gpuStatus.textContent = "（浏览器不支持 WebGPU）";
+          return;
+        }
+        const adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) {
+          gpuStatus.textContent = "（无可用 GPU 适配器）";
+          return;
+        }
+        gpuCheckbox.disabled = false;
+        gpuStatus.textContent = "（可用）";
+        gpuStatus.style.color = "#4caf50";
+      } catch {
+        gpuStatus.textContent = "（WebGPU 初始化失败）";
+      }
+    })();
 
     const perm = (n, k) =>
       n < k
@@ -1043,7 +1093,8 @@ export default class PartyManager {
             leaderPosterIdx === -1 ? null : posters[leaderPosterIdx];
 
           try {
-            const topN = topNCheckbox.checked ? (parseInt(topNInput.value) || 100) : 0;
+            const useWebGPU = gpuCheckbox.checked && !gpuCheckbox.disabled;
+            const workerCount = parseInt(workerInput.value) || maxCores;
             const result = await root.handleAutoParty({
               selChars,
               selPosters,
@@ -1051,11 +1102,32 @@ export default class PartyManager {
               leader,
               leaderPoster,
               searchMode: 'precise',
-              topN,
-              onProgress: (current, total, bestScore) => {
-                const pct = ((current / total) * 100).toFixed(1);
-                progressFill.style.width = pct + "%";
-                progressText.textContent = `${current.toLocaleString()} / ${total.toLocaleString()} (${pct}%) - 当前最高分: ${bestScore}`;
+              useWebGPU,
+              workerCount,
+              onTotalReady: (actualTotal, isGpuFiltered) => {
+                if (isGpuFiltered) {
+                  estText.textContent = `实际遍历次数: ${actualTotal.toLocaleString()}（WebGPU 筛选后）`;
+                }
+              },
+              onProgress: (progress) => {
+                const { phase, phase1Current, phase1Total, phase2Current, phase2Total, bestScore } = progress;
+                if (phase === 'counting') {
+                  const pct = phase1Total > 0 ? ((phase1Current / phase1Total) * 100).toFixed(1) : '0.0';
+                  progressFill.style.width = pct + "%";
+                  progressText.textContent = `筛选中: ${phase1Current.toLocaleString()} / ${phase1Total.toLocaleString()} 组合 (${pct}%)`;
+                } else {
+                  if (phase1Total > 0) {
+                    // CPU 模式：显示两阶段筛选结果
+                    estText.textContent = `筛选完成: ${phase1Total.toLocaleString()} 个组合 → ${phase2Total.toLocaleString()} 个候选`;
+                  }
+                  // GPU 模式时 onTotalReady 已设置 estText，不覆盖
+                  const pct = phase2Total > 0 ? ((phase2Current / phase2Total) * 100).toFixed(1) : '0.0';
+                  const overallPct = phase1Total + phase2Total > 0
+                    ? ((phase1Current + phase2Current) / (phase1Total + phase2Total) * 100).toFixed(1)
+                    : '0.0';
+                  progressFill.style.width = overallPct + "%";
+                  progressText.textContent = `评分中: ${phase2Current.toLocaleString()} / ${phase2Total.toLocaleString()} 候选 (${pct}%) - 当前最高分: ${bestScore}`;
+                }
               },
             });
 
@@ -1079,6 +1151,23 @@ export default class PartyManager {
                   _("text", `最优配队 (分数: ${result.bestScore})`),
                 ]),
               );
+
+              // 显示耗时信息
+              const formatDuration = (ms) => {
+                if (ms < 1000) return `${ms.toFixed(0)}ms`;
+                if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+                return `${Math.floor(ms / 60000)}m${((ms % 60000) / 1000).toFixed(0)}s`;
+              };
+              const timeInfo = [];
+              if (result.filterDuration > 0) timeInfo.push(`筛选: ${formatDuration(result.filterDuration)}`);
+              if (result.scoringDuration > 0) timeInfo.push(`评分: ${formatDuration(result.scoringDuration)}`);
+              if (timeInfo.length > 0) {
+                resultSection.appendChild(
+                  _("div", { style: { fontSize: "12px", color: "#888", marginTop: "4px" } }, [
+                    _("text", timeInfo.join(' | ')),
+                  ]),
+                );
+              }
               const btnApply = _("input", {
                 type: "button",
                 value: "应用到当前编队",
@@ -1113,7 +1202,8 @@ export default class PartyManager {
     dialog.appendChild(posterSection);
     dialog.appendChild(accSection);
     dialog.appendChild(estInfo);
-    dialog.appendChild(topNSection);
+    dialog.appendChild(workerSection);
+    dialog.appendChild(gpuSection);
     dialog.appendChild(progressSection);
     dialog.appendChild(resultSection);
     dialog.appendChild(btnRow);

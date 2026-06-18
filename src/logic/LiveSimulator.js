@@ -998,4 +998,412 @@ export default class LiveSimulator {
       this.processWrongLightToSp(idx, addedLights);
     }
   }
+
+  /**
+   * 收集角色的灯光相关参数，用于 WebGPU 预筛选计算
+   * 角色需要已经完成 resetEffects() + bloomBonusEffects 的应用
+   *
+   * @param {CharacterData} chara - 角色数据
+   * @returns {Object|null} 灯光参数
+   */
+  static collectLightParams(chara, teamContext) {
+    if (!chara) return null;
+
+    const senseTypeMap = {
+      Support: 0,
+      Control: 1,
+      Amplification: 2,
+      Special: 3,
+      Variable: 4,
+      Alternative: 4,
+      None: 5,
+    };
+
+    const primarySense = chara.senseAll.find((s) => s.Type !== "None");
+    if (!primarySense) {
+      return {
+        senseType: 4, lightCount: 0, ct: 999,
+        numSenses: 0,
+        senseType1: 4, lightCount1: 0, ct1: 0, senseType2: 4, lightCount2: 0, ct2: 0,
+        senseType3: 4, lightCount3: 0, ct3: 0, senseType4: 4, lightCount4: 0, ct4: 0,
+        extraLightSupport: 0, extraLightControl: 0, extraLightAmplification: 0,
+        extraLightSpecial: 0, extraLightVariable: 0,
+        slotPreSelf0: 0, slotPreSelf1: 0, slotPreSelf2: 0, slotPreSelf3: 0, slotPreSelf4: 0,
+        slotPreExtra0: 0, slotPreExtra1: 0, slotPreExtra2: 0, slotPreExtra3: 0, slotPreExtra4: 0,
+        decreaseReq0: 0, decreaseReq1: 0, decreaseReq2: 0, decreaseReq3: 0,
+        wrongLightToSp: 0,
+      };
+    }
+
+    // 遍历 chara.senseAll（包括 None Sense），与 CPU 的 CT 跟踪一致
+    const allSenses = chara.senseAll;
+    const senseTypes = allSenses.map((s) => senseTypeMap[s.Type] ?? 4);
+    const baseLightCounts = allSenses.map((s) => s.Type === "None" ? 0 : (s.data.LightCount || 1));
+
+    const senseType = senseTypes[0];
+    let lightCount = baseLightCounts[0];
+    const ct = primarySense.ct;
+
+    // 从 bloomBonusEffects 中提取额外灯光
+    let extraSelfLights = 0;
+    let extraLightSupport = 0;
+    let extraLightControl = 0;
+    let extraLightAmplification = 0;
+    let extraLightSpecial = 0;
+    let extraLightVariable = 0;
+    let wrongLightToSp = 0;
+
+    chara.bloomBonusEffects.forEach((effect) => {
+      switch (effect.Type) {
+        case "AddSenseLightSelf":
+          // AddSenseLightSelf 不检查 FireTimingType，始终生效
+          extraSelfLights += effect.activeEffect.Value;
+          break;
+        case "AddSenseLightSupport":
+          if (effect.FireTimingType === "Passive") extraLightSupport += effect.activeEffect.Value;
+          break;
+        case "AddSenseLightControl":
+          if (effect.FireTimingType === "Passive") extraLightControl += effect.activeEffect.Value;
+          break;
+        case "AddSenseLightAmplification":
+          if (effect.FireTimingType === "Passive") extraLightAmplification += effect.activeEffect.Value;
+          break;
+        case "AddSenseLightSpecial":
+          if (effect.FireTimingType === "Passive") extraLightSpecial += effect.activeEffect.Value;
+          break;
+        case "AddSenseLightVariable":
+          if (effect.FireTimingType === "Passive") extraLightVariable += effect.activeEffect.Value;
+          break;
+        case "ChangeWrongLightToSpLight":
+          wrongLightToSp += effect.activeEffect.Value;
+          break;
+      }
+    });
+
+    lightCount += extraSelfLights;
+
+    // Sense PreEffect/BranchEffect 额外灯光（每个 Sense 发动时只触发该 Sense 的效果）
+    // 按 Sense 槽位存储，包括 None Sense（lightCount=0 不产生灯光但占用 CT）
+    const slotPreSelf = [0, 0, 0, 0, 0];
+    const slotPreExtra = [0, 0, 0, 0, 0];
+
+    for (let si = 0; si < allSenses.length; si++) {
+      const sense = allSenses[si];
+      if (sense.Type === "None") continue; // None Sense 没有 PreEffects
+      // PreEffects
+      if (sense.data.PreEffects) {
+        for (const pe of sense.data.PreEffects) {
+          try {
+            const effect = Effect.get(pe.EffectMasterId, chara.senselv);
+            if (LiveSimulator.SCORE_ONLY_EFFECTS.has(effect.Type)) continue;
+            if (effect.Type === "AddSenseLightSelf") {
+              slotPreSelf[si] += effect.activeEffect.Value;
+            } else if (effect.Type.startsWith("AddSenseLight")) {
+              slotPreExtra[si] += effect.activeEffect.Value;
+            }
+          } catch (e) { /* skip unknown effects */ }
+        }
+      }
+      // BranchEffects（根据队伍上下文精确选择分支）
+      if (sense.data.Branches && sense.data.Branches.length > 0) {
+        let branch;
+        if (teamContext && sense.data.BranchCondition1 && sense.data.BranchCondition1 !== 'None') {
+          // 精确选择：遍历分支找第一个满足条件的
+          for (const b of sense.data.Branches) {
+            let judgeValue;
+            const condType = sense.data.BranchCondition1;
+            if (condType === "LifeGuardCount") {
+              judgeValue = teamContext.lifeGuardCount || 0;
+            } else if (condType === "AttributeCount") {
+              judgeValue = teamContext.attributeCount || 0;
+            } else if (condType === "CompanyMemberCount") {
+              judgeValue = teamContext.companyCounts?.[sense.data.ConditionValue1] || 0;
+            } else if (condType === "CharacterBaseGroup") {
+              judgeValue = teamContext.hasCharacterBase?.(sense.data.ConditionValue1) ? 1 : 0;
+            } else {
+              break; // 未知条件，用默认分支
+            }
+            let met = false;
+            switch (b.JudgeType1) {
+              case "Equal": met = judgeValue === b.Parameter1; break;
+              case "MoreThan": met = judgeValue >= b.Parameter1; break;
+              case "LessThan": met = judgeValue <= b.Parameter1; break;
+            }
+            if (met) { branch = b; break; }
+          }
+        }
+        if (!branch) branch = sense.data.Branches[0];
+
+        if (branch?.BranchEffects) {
+          for (const be of branch.BranchEffects) {
+            try {
+              const effect = Effect.get(be.EffectMasterId, chara.senselv);
+              if (LiveSimulator.SCORE_ONLY_EFFECTS.has(effect.Type)) continue;
+              if (effect.Type === "AddSenseLightSelf") {
+                slotPreSelf[si] += effect.activeEffect.Value;
+              } else if (effect.Type.startsWith("AddSenseLight")) {
+                slotPreExtra[si] += effect.activeEffect.Value;
+              }
+            } catch (e) { /* skip unknown effects */ }
+          }
+        }
+      }
+    }
+
+    const req = chara.staract.requireDecrease;
+
+    // 角色属性（用于效果条件检查）
+    const companyIdList = chara.companyIdList || [];
+    const attributeList = chara.attributeList || [];
+    const characterBaseIdList = chara.data.SecondaryCharacterBaseMasterId
+      ? [chara.data.CharacterBaseMasterId, chara.data.SecondaryCharacterBaseMasterId]
+      : [chara.data.CharacterBaseMasterId];
+    // Attribute 字符串→数字映射：1=Cute, 2=Cool, 3=Colorful, 4=Cheerful
+    const attrStrToId = { Cute: 1, Cool: 2, Colorful: 3, Cheerful: 4 };
+    const attrId1 = attrStrToId[attributeList[0]] || 0;
+    const attrId2 = attrStrToId[attributeList[1]] || 0;
+    // SenseType 数字映射：与 shader 中 senseTypeMap 一致 (0=Support,1=Control,2=Amplification,3=Special,4=Variable,5=None)
+    // 但 Effect trigger 中 SenseTypeEnum 是 {1:Support, 2:Control, 3:Amplification, 4:Special, 9:None, 10:Alternative}
+    const senseTypeId = senseType; // 已经是 0-5 的数字
+
+    return {
+      senseType,
+      lightCount,
+      ct,
+      // 多 Sense 类型（包括 None Sense，用于 CT 跟踪）
+      numSenses: allSenses.length,
+      senseType1: senseTypes[1] ?? 5, lightCount1: baseLightCounts[1] ?? 0, ct1: allSenses[1]?.ct ?? 0,
+      senseType2: senseTypes[2] ?? 5, lightCount2: baseLightCounts[2] ?? 0, ct2: allSenses[2]?.ct ?? 0,
+      senseType3: senseTypes[3] ?? 5, lightCount3: baseLightCounts[3] ?? 0, ct3: allSenses[3]?.ct ?? 0,
+      senseType4: senseTypes[4] ?? 5, lightCount4: baseLightCounts[4] ?? 0, ct4: allSenses[4]?.ct ?? 0,
+      // 被动效果额外灯光
+      extraLightSupport,
+      extraLightControl,
+      extraLightAmplification,
+      extraLightSpecial,
+      extraLightVariable,
+      // Sense PreEffect/BranchEffect 额外灯光（按槽位）
+      slotPreSelf0: slotPreSelf[0], slotPreSelf1: slotPreSelf[1],
+      slotPreSelf2: slotPreSelf[2], slotPreSelf3: slotPreSelf[3], slotPreSelf4: slotPreSelf[4],
+      slotPreExtra0: slotPreExtra[0], slotPreExtra1: slotPreExtra[1],
+      slotPreExtra2: slotPreExtra[2], slotPreExtra3: slotPreExtra[3], slotPreExtra4: slotPreExtra[4],
+      // 需求减少
+      decreaseReq0: req[0] || 0,
+      decreaseReq1: req[1] || 0,
+      decreaseReq2: req[2] || 0,
+      decreaseReq3: req[3] || 0,
+      // wrongLightToSp
+      wrongLightToSp,
+      // 角色属性（用于效果 trigger 条件检查）
+      companyId1: companyIdList[0] || 0,
+      companyId2: companyIdList[1] || 0,
+      attributeId1: attrId1,
+      attributeId2: attrId2,
+      characterBaseId1: characterBaseIdList[0] || 0,
+      characterBaseId2: characterBaseIdList[1] || 0,
+    };
+  }
+
+  /**
+   * 批量收集所有角色的灯光参数
+   * @param {Array<CharacterData>} characters
+   * @returns {Array<Object>}
+   */
+  static collectAllLightParams(characters) {
+    return characters.map((c) => LiveSimulator.collectLightParams(c)).filter(Boolean);
+  }
+
+  /**
+   * 从海报能力中提取灯光相关效果（逐条带 trigger 信息）
+   * @param {PosterData} poster
+   * @returns {Array<{field: number, value: number, triggerType: number, triggerValue: number}>}
+   */
+  /**
+   * 选择 Poster 能力的活跃分支
+   * @param {Object} ability - PosterAbilityData
+   * @param {Object} [teamContext] - { attributeCount, companyCounts: {companyId: count} }
+   * @returns {Object|null} 选中的分支
+   */
+  static selectPosterBranch(ability, teamContext) {
+    const branches = ability.data?.Branches;
+    if (!branches?.length) return null;
+    if (!teamContext) return branches[0];
+
+    for (const branch of branches) {
+      let conditionMet = true;
+      const condType = ability.data.BranchConditionType1;
+      if (condType && condType !== "None") {
+        let judgeValue;
+        if (condType === "AttributeCount") {
+          judgeValue = teamContext.attributeCount;
+        } else if (condType === "CompanyMemberCount") {
+          judgeValue = teamContext.companyCounts?.[ability.data.ConditionValue1] || 0;
+        } else {
+          return branches[0]; // 未知条件，降级
+        }
+        switch (branch.JudgeType1) {
+          case "Equal": conditionMet = judgeValue === branch.Parameter1; break;
+          case "MoreThan": conditionMet = judgeValue >= branch.Parameter1; break;
+          case "LessThan": conditionMet = judgeValue <= branch.Parameter1; break;
+        }
+      }
+      if (conditionMet) return branch;
+    }
+    return branches[0];
+  }
+
+  static collectPosterLightEffects(poster, teamContext) {
+    const entries = [];
+    if (!poster?.abilities) return entries;
+
+    poster.abilities.forEach((ability) => {
+      if (!ability.unlocked) return;
+      const branch = LiveSimulator.selectPosterBranch(ability, teamContext);
+      if (!branch?.BranchEffects) return;
+
+      branch.BranchEffects.forEach((effectData) => {
+        const effect = Effect.get(effectData.EffectMasterId, ability.level + ability.release);
+        if (effect.Type !== "AddSenseLightSelf" && effect.FireTimingType !== "Passive") return;
+        LiveSimulator.#extractEffectEntries(effect, entries);
+      });
+    });
+
+    return entries;
+  }
+
+  /**
+   * 从饰品主效果中提取灯光相关效果（逐条带 trigger 信息）
+   * @param {AccessoryData} accessory
+   * @returns {Array<{field: number, value: number, triggerType: number, triggerValue: number}>}
+   */
+  static collectAccessoryLightEffects(accessory) {
+    const entries = [];
+    if (!accessory?.mainEffects) return entries;
+
+    accessory.mainEffects.forEach((effectEntry) => {
+      const effect = effectEntry.effect;
+      if (!effect) return;
+      if (effect.Type !== "AddSenseLightSelf" && effect.FireTimingType !== "Passive") return;
+      LiveSimulator.#extractEffectEntries(effect, entries);
+    });
+
+    return entries;
+  }
+
+  // SenseTypeEnum trigger.Value → shader senseType 编码
+  static #senseTypeTriggerToShader = { 1: 0, 2: 1, 3: 2, 4: 3, 9: 5, 10: 4 };
+
+  /**
+   * 效果类型 → field 索引映射
+   * @private
+   */
+  static #effectTypeToField(type) {
+    const fieldMap = {
+      AddSenseLightSelf: 0,
+      AddSenseLightSupport: 1,
+      AddSenseLightControl: 2,
+      AddSenseLightAmplification: 3,
+      AddSenseLightSpecial: 4,
+      AddSenseLightVariable: 5,
+      DecreaseRequireSupportLight: 6,
+      DecreaseRequireControlLight: 7,
+      DecreaseRequireAmplificationLight: 8,
+      DecreaseRequireSpecialLight: 9,
+      SenseRecastDown: 10,
+    };
+    return fieldMap[type];
+  }
+
+  /**
+   * 从单个 Effect 提取效果条目，带 trigger 信息
+   * triggerType: 0=无条件, 1=Company, 2=Attribute, 3=SenseType, 4=CharacterBase, 5+=始终满足(上界)
+   * @private
+   */
+  static #extractEffectEntries(effect, entries) {
+    const field = LiveSimulator.#effectTypeToField(effect.Type);
+    if (field === undefined) return;
+    const value = effect.activeEffect?.Value || 0;
+    if (value === 0) return;
+
+    // 分析 Triggers 和 Conditions，提取可按角色检查的条件
+    const triggerInfo = LiveSimulator.#analyzeTriggers(effect);
+    entries.push({ field, value, triggerType: triggerInfo.type, triggerValue: triggerInfo.value });
+  }
+
+  /**
+   * 分析效果的 Triggers + Conditions，提取最关键的角色级条件
+   * @private
+   */
+  static #analyzeTriggers(effect) {
+    const triggers = effect.Triggers || [];
+    const conditions = effect.data?.Conditions || [];
+
+    // 合并所有 trigger + condition，找可按角色检查的
+    const allChecks = [
+      ...triggers.map(t => ({ type: t.Trigger, value: t.Value })),
+      ...conditions.map(c => ({ type: c.Condition, value: c.Value })),
+    ];
+
+    // 优先匹配角色级条件
+    for (const check of allChecks) {
+      switch (check.type) {
+        case 'Company': return { type: 1, value: check.value };
+        case 'Attribute': return { type: 2, value: check.value };
+        case 'SenseType': {
+          const shaderVal = LiveSimulator.#senseTypeTriggerToShader[check.value];
+          return { type: 3, value: shaderVal !== undefined ? shaderVal : check.value };
+        }
+        case 'CharacterBase': return { type: 4, value: check.value };
+      }
+    }
+
+    // 如果有 party-level 条件或 CharacterBaseGroup，视为始终满足（上界估算）
+    // 如果无条件，type=0 表示无条件
+    if (allChecks.length === 0) return { type: 0, value: 0 };
+
+    // 有未处理的条件（CharacterBaseGroup, CompanyCount 等），上界估算
+    return { type: 0, value: 0 };
+  }
+
+  /**
+   * 累积单个效果到结果对象
+   * @private
+   */
+  static #accumulateEffect(effect, result) {
+    switch (effect.Type) {
+      case "AddSenseLightSelf":
+        result.selfLightBonus += effect.activeEffect.Value;
+        break;
+      case "AddSenseLightSupport":
+        result.extraLightSupport += effect.activeEffect.Value;
+        break;
+      case "AddSenseLightControl":
+        result.extraLightControl += effect.activeEffect.Value;
+        break;
+      case "AddSenseLightAmplification":
+        result.extraLightAmplification += effect.activeEffect.Value;
+        break;
+      case "AddSenseLightSpecial":
+        result.extraLightSpecial += effect.activeEffect.Value;
+        break;
+      case "AddSenseLightVariable":
+        result.extraLightVariable += effect.activeEffect.Value;
+        break;
+      case "DecreaseRequireSupportLight":
+        result.decreaseReq0 += effect.activeEffect.Value;
+        break;
+      case "DecreaseRequireControlLight":
+        result.decreaseReq1 += effect.activeEffect.Value;
+        break;
+      case "DecreaseRequireAmplificationLight":
+        result.decreaseReq2 += effect.activeEffect.Value;
+        break;
+      case "DecreaseRequireSpecialLight":
+        result.decreaseReq3 += effect.activeEffect.Value;
+        break;
+      case "SenseRecastDown":
+        result.recastDown += effect.activeEffect.Value;
+        break;
+    }
+  }
 }

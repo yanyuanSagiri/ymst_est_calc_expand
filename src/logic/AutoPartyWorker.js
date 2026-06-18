@@ -43,10 +43,16 @@ self.onmessage = (e) => {
     case 'STOP_SEARCH':
       STATE.shouldStop = true;
       break;
+    case 'GLOBAL_THRESHOLD':
+      if (self._resolveThreshold) {
+        self._resolveThreshold(data.threshold);
+        self._resolveThreshold = null;
+      }
+      break;
   }
 };
 
-function runSearch(params) {
+async function runSearch(params) {
   const {
     charactersJson,
     postersJson,
@@ -150,45 +156,8 @@ function runSearch(params) {
     theaterEffects: theaterEffects,
   };
 
-  const charPerms = [];
-  const permuteChars = (arr, current) => {
-    if (current.length === 5) { charPerms.push(current); return; }
-    for (let i = 0; i < arr.length; i++) permuteChars(arr.filter((_, j) => j !== i), [...current, arr[i]]);
-  };
-  permuteChars(selChars.map((_, i) => i), []);
-
-  const posterIndices = selPosters.map((_, i) => i).filter(i => i !== leaderPosterIdx);
-  const posterSlots = leaderPosterIdx === -1 ? 5 : 4;
-  const posterPerms = [];
-  const permutePosters = (arr, current) => {
-    if (current.length === posterSlots) { posterPerms.push(current); return; }
-    for (let i = 0; i < arr.length; i++) permutePosters(arr.filter((_, j) => j !== i), [...current, arr[i]]);
-  };
-  permutePosters(posterIndices, []);
-
-  const accPerms = [];
-  const permuteAccs = (arr, current) => {
-    if (current.length === 5) { accPerms.push(current); return; }
-    for (let i = 0; i < arr.length; i++) permuteAccs(arr.filter((_, j) => j !== i), [...current, arr[i]]);
-  };
-  permuteAccs(selAccs.map((_, i) => i), []);
-
-  const total = charPerms.length * posterPerms.length * accPerms.length;
-  const chunkSize = Math.ceil(total / totalWorkers);
-  const startIdx = workerId * chunkSize;
-  const endIdx = Math.min(startIdx + chunkSize, total);
-
-  console.log(`Worker ${workerId}: precise search`, {
-    charPerms: charPerms.length,
-    posterPerms: posterPerms.length,
-    accPerms: accPerms.length,
-    total,
-    chunkStart: startIdx,
-    chunkEnd: endIdx,
-  });
-
-  const topN = params.topN || 0;
-  const enableFilter = topN > 0;
+  // GPU 预筛选的完整组合
+  const filteredCombinations = params.filteredCombinations || null;
 
   let bestScore = -1;
   let bestIndices = null;
@@ -196,11 +165,102 @@ function runSearch(params) {
   let errorCount = 0;
   let lastReportTime = Date.now();
 
-  if (enableFilter) {
+  if (filteredCombinations) {
+    // ===== GPU 预筛选模式：直接计算完整分数 =====
+    const total = filteredCombinations.length;
+    const chunkSize = Math.ceil(total / totalWorkers);
+    const startIdx = workerId * chunkSize;
+    const endIdx = Math.min(startIdx + chunkSize, total);
+
+    console.log(`Worker ${workerId}: GPU pre-filtered mode, ${endIdx - startIdx} combinations to score`);
+
+    for (let i = startIdx; i < endIdx && !STATE.shouldStop; i++) {
+      const combo = filteredCombinations[i];
+      const cp = combo.charPerm;
+      const fullPosterIndices = combo.posterPerm; // 已包含队长海报的完整 5 元素数组
+      const ap = combo.accPerm;
+
+      const members = cp.map(j => selChars[j]);
+      const leaderPos = cp.indexOf(leaderIdx);
+      const posters = fullPosterIndices.map(j => selPosters[j]);
+      const accessories = ap.map(j => selAccs[j]);
+
+      try {
+        const leader = members[leaderPos];
+        if (!leader) { count++; continue; }
+
+        const calcExtra = { ...extra, leader };
+        const calc = new ScoreCalculator(members, posters, accessories, calcExtra);
+        LiveSimulator.saDelayLastTiming = null;
+        calc.calcPure();
+
+        if (calc.result) {
+          const totalScore = calc.result.totalScore ||
+            (calc.result.baseScore[3] +
+              calc.result.senseScore.reduce((a, b) => a + b, 0) +
+              calc.result.starActScore.reduce((a, b) => a + b, 0));
+
+          if (totalScore > bestScore) {
+            bestScore = totalScore;
+            bestIndices = { charIndices: cp, posterIndices: fullPosterIndices, accIndices: ap };
+          }
+        }
+      } catch (err) {
+        errorCount++;
+        if (errorCount <= 5) console.error("calcPure error:", err.message);
+      }
+
+      count++;
+      const now = Date.now();
+      if (now - lastReportTime > 200) {
+        self.postMessage({ type: 'PROGRESS', data: { current: count, total: endIdx - startIdx, bestScore, errorCount, phase: 'scoring' } });
+        lastReportTime = now;
+      }
+    }
+    // 最终进度
+    self.postMessage({ type: 'PROGRESS', data: { current: count, total: count, bestScore, errorCount, phase: 'scoring' } });
+
+  } else {
+    // ===== CPU 模式：两阶段筛选 =====
+    const charPerms = [];
+    const permuteChars = (arr, current) => {
+      if (current.length === 5) { charPerms.push(current); return; }
+      for (let i = 0; i < arr.length; i++) permuteChars(arr.filter((_, j) => j !== i), [...current, arr[i]]);
+    };
+    permuteChars(selChars.map((_, i) => i), []);
+
+    const posterIndices = selPosters.map((_, i) => i).filter(i => i !== leaderPosterIdx);
+    const posterSlots = leaderPosterIdx === -1 ? 5 : 4;
+    const posterPerms = [];
+    const permutePosters = (arr, current) => {
+      if (current.length === posterSlots) { posterPerms.push(current); return; }
+      for (let i = 0; i < arr.length; i++) permutePosters(arr.filter((_, j) => j !== i), [...current, arr[i]]);
+    };
+    permutePosters(posterIndices, []);
+
+    const accPerms = [];
+    const permuteAccs = (arr, current) => {
+      if (current.length === 5) { accPerms.push(current); return; }
+      for (let i = 0; i < arr.length; i++) permuteAccs(arr.filter((_, j) => j !== i), [...current, arr[i]]);
+    };
+    permuteAccs(selAccs.map((_, i) => i), []);
+
+    const total = charPerms.length * posterPerms.length * accPerms.length;
+    const chunkSize = Math.ceil(total / totalWorkers);
+    const startIdx = workerId * chunkSize;
+    const endIdx = Math.min(startIdx + chunkSize, total);
+
+    console.log(`Worker ${workerId}: CPU two-phase mode`, {
+      charPerms: charPerms.length,
+      posterPerms: posterPerms.length,
+      accPerms: accPerms.length,
+      total,
+      chunkStart: startIdx,
+      chunkEnd: endIdx,
+    });
+
     // 两阶段筛选：第一阶段计算 starActCount，第二阶段计算完整分数
     const candidates = [];
-    let maxStarActCount = 0; // 候选池中最大的 starActCount
-    let minStarActCount = 0; // 最小阈值 = maxStarActCount - 1
 
     for (let i = startIdx; i < endIdx && !STATE.shouldStop; i++) {
       const cpIdx = Math.floor(i / (posterPerms.length * accPerms.length));
@@ -234,29 +294,12 @@ function runSearch(params) {
         LiveSimulator.saDelayLastTiming = null;
         const starActCount = calc.calcStarActCountOnly();
 
-        // starActCount 低于阈值，直接跳过
-        if (starActCount < minStarActCount) {
-          count++;
-          continue;
-        }
-
-        // 更新最大值
-        if (starActCount > maxStarActCount) {
-          maxStarActCount = starActCount;
-          minStarActCount = maxStarActCount - 1;
-        }
-
         candidates.push({
           starActCount,
           charPerm: cp,
           posterPerm: pp,
           accPerm: ap,
         });
-
-        // 候选池满就裁剪
-        if (candidates.length >= topN) {
-          candidates.length = topN;
-        }
       } catch (err) {
         errorCount++;
         if (errorCount <= 5) console.error("calcStarActCountOnly error:", err.message);
@@ -270,12 +313,19 @@ function runSearch(params) {
       }
     }
 
-    const topCandidates = candidates.slice(0, topN);
+    // 报告 maxSA 给 pool，等待全局阈值
+    const localMaxSA = candidates.reduce((m, c) => Math.max(m, c.starActCount), 0);
+    self.postMessage({ type: 'PHASE1_DONE', data: { maxSA: localMaxSA, candidateCount: candidates.length } });
 
-    console.log(`Worker ${workerId}: phase 1 done, top ${topCandidates.length} candidates selected`);
+    // 等待 pool 广播全局阈值
+    const globalThreshold = await new Promise(resolve => {
+      self._resolveThreshold = resolve;
+    });
+
+    const filtered = candidates.filter(c => c.starActCount >= globalThreshold);
 
     count = 0;
-    for (const candidate of topCandidates) {
+    for (const candidate of filtered) {
       if (STATE.shouldStop) break;
 
       const cp = candidate.charPerm;
@@ -307,7 +357,17 @@ function runSearch(params) {
 
           if (totalScore > bestScore) {
             bestScore = totalScore;
-            bestIndices = { charIndices: cp, posterIndices: pp.map(j => leaderPosterIdx >= 0 && j >= leaderPosterIdx ? j + 1 : j), accIndices: ap };
+            // 构建完整 5 元素海报索引（包含队长海报）
+            const fullPosterIndices = [];
+            let ppI2 = 0;
+            for (let pi = 0; pi < 5; pi++) {
+              if (pi === leaderPos && leaderPosterIdx >= 0) {
+                fullPosterIndices.push(leaderPosterIdx);
+              } else {
+                fullPosterIndices.push(pp[ppI2++]);
+              }
+            }
+            bestIndices = { charIndices: cp, posterIndices: fullPosterIndices, accIndices: ap };
           }
         }
       } catch (err) {
@@ -316,64 +376,7 @@ function runSearch(params) {
       }
 
       count++;
-      self.postMessage({ type: 'PROGRESS', data: { current: count, total: topCandidates.length, bestScore, errorCount, phase: 'scoring' } });
-    }
-  } else {
-    // 原有逻辑：直接计算完整分数
-    for (let i = startIdx; i < endIdx && !STATE.shouldStop; i++) {
-      const cpIdx = Math.floor(i / (posterPerms.length * accPerms.length));
-      const remaining = i % (posterPerms.length * accPerms.length);
-      const ppIdx = Math.floor(remaining / accPerms.length);
-      const acIdx = remaining % accPerms.length;
-
-      const cp = charPerms[cpIdx];
-      const pp = posterPerms[ppIdx];
-      const ap = accPerms[acIdx];
-
-      if (!isPosterPermValid(pp, leaderPosterIdx, selPosters)) {
-        count++;
-        continue;
-      }
-
-      const members = cp.map(j => selChars[j]);
-      const leaderPos = cp.indexOf(leaderIdx);
-      const posters = pp.map(j => selPosters[j]);
-      if (leaderPosterIdx >= 0) {
-        posters.splice(leaderPos, 0, selPosters[leaderPosterIdx]);
-      }
-      const accessories = ap.map(j => selAccs[j]);
-
-      try {
-        const leader = members[leaderPos];
-        if (!leader) { count++; continue; }
-
-        const calcExtra = { ...extra, leader };
-        const calc = new ScoreCalculator(members, posters, accessories, calcExtra);
-        LiveSimulator.saDelayLastTiming = null;
-        calc.calcPure();
-
-        if (calc.result) {
-          const totalScore = calc.result.totalScore ||
-            (calc.result.baseScore[3] +
-              calc.result.senseScore.reduce((a, b) => a + b, 0) +
-              calc.result.starActScore.reduce((a, b) => a + b, 0));
-
-          if (totalScore > bestScore) {
-            bestScore = totalScore;
-            bestIndices = { charIndices: cp, posterIndices: pp.map(j => leaderPosterIdx >= 0 && j >= leaderPosterIdx ? j + 1 : j), accIndices: ap };
-          }
-        }
-      } catch (err) {
-        errorCount++;
-        if (errorCount <= 5) console.error("calcPure error:", err.message, err.stack?.split('\n')[1]);
-      }
-
-      count++;
-      const now = Date.now();
-      if (now - lastReportTime > 200) {
-        self.postMessage({ type: 'PROGRESS', data: { current: count, total: endIdx - startIdx, bestScore, errorCount } });
-        lastReportTime = now;
-      }
+      self.postMessage({ type: 'PROGRESS', data: { current: count, total: filtered.length, bestScore, errorCount, phase: 'scoring' } });
     }
   }
 

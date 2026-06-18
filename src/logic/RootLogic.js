@@ -19,6 +19,8 @@ import ScoreCalculationType from "./ScoreCalculationType";
 import ScoreCalculator from "./ScoreCalculator";
 import MergedLiveSimulator from "./MergedLiveSimulator";
 import AutoPartyWorkerPool from "./AutoPartyWorkerPool";
+import WebGPUStarActCounter from "./WebGPUStarActCounter";
+import LiveSimulator from "./LiveSimulator";
 import FilterManager from "../manager/FilterManager";
 import SideMenuManager from "../manager/SideMenuManager";
 import GachaViewer, { GACHA_TYPE } from "../manager/GachaViewer";
@@ -283,6 +285,12 @@ export default class RootLogic {
             style: { marginLeft: "0.5em" },
           })),
           _("text", ` / ${this.nonPersistentState.maxAlbumPages * 6}`),
+          _("input", {
+            type: "button",
+            "data-text-value": "OPTIMIZE_ALBUM",
+            style: { marginLeft: "1em" },
+            event: { click: (_) => this.handleOptimizeAlbum() },
+          }),
         ]),
         _("details", {}, [
           _("summary", { "data-text-key": "LABEL_SORT_AND_FILTER" }),
@@ -326,12 +334,6 @@ export default class RootLogic {
             type: "button",
             "data-text-value": "ADD",
             event: { click: (e) => this.addPhotoEffect() },
-          }),
-          _("input", {
-            type: "button",
-            "data-text-value": "OPTIMIZE_ALBUM",
-            style: { marginLeft: "1em" },
-            event: { click: (_) => this.handleOptimizeAlbum() },
           }),
         ]),
 
@@ -2320,8 +2322,10 @@ export default class RootLogic {
     selAccs,
     leader,
     leaderPoster,
-    topN = 0,
+    useWebGPU = false,
+    workerCount,
     onProgress,
+    onTotalReady,
   }) {
     if (selChars.length < 4 || selPosters.length < 4 || selAccs.length < 5) {
       alert("可选角色/海报/饰品数量不足，请增加候选项");
@@ -2376,17 +2380,220 @@ export default class RootLogic {
     const gameDbData = {};
     gameDbKeys.forEach(key => { gameDbData[key] = GameDb[key]; });
 
+    // ===== WebGPU 预筛选：过滤完整组合（角色 × 海报 × 饰品）=====
+    let filteredCombinations = null;
+    let filterDuration = 0; // 候选筛选耗时 (ms)
+    let scoringDuration = 0; // 评分耗时 (ms)
+
+    // 海报排列有效性检查（与 AutoPartyWorker 中相同的逻辑）
+    const isPosterPermValid = (posterPerm, lpIdx, allPosters) => {
+      const usedRestrictGroups = new Set();
+      if (lpIdx >= 0) {
+        const leaderRestrictId = allPosters[lpIdx]?.data?.OrganizeRestrictGroupId;
+        if (leaderRestrictId) usedRestrictGroups.add(leaderRestrictId);
+      }
+      for (let i = 0; i < posterPerm.length; i++) {
+        const idx = posterPerm[i];
+        if (idx < 0) continue;
+        const restrictId = allPosters[idx]?.data?.OrganizeRestrictGroupId;
+        if (restrictId) {
+          if (usedRestrictGroups.has(restrictId)) return false;
+          usedRestrictGroups.add(restrictId);
+        }
+      }
+      return true;
+    };
+
     const posterIndices = selPosters.map((_, i) => i).filter(i => i !== leaderPosterIdx);
     const posterSlots = leaderPosterIdx === -1 ? 5 : 4;
-    const charPermCount = AutoPartyWorkerPool.permCount(selChars.length, 5);
-    const posterPermCount = AutoPartyWorkerPool.permCount(posterIndices.length, posterSlots);
-    const accPermCount = AutoPartyWorkerPool.permCount(selAccs.length, 5);
-    const totalCombinations = charPermCount * posterPermCount * accPermCount;
 
-    console.log("autoParty precise perms:", { charPermCount, posterPermCount, accPermCount, totalCombinations });
+    if (useWebGPU && selChars.length >= 5) {
+      const filterStart = performance.now();
+      try {
+        console.log("autoParty: attempting WebGPU full-combination pre-filter...");
+        const gpuCounter = new WebGPUStarActCounter();
+        const gpuOk = await gpuCounter.init();
+        if (gpuOk) {
+          // 计算队伍属性（用于分支选择）
+          const teamAttrCount = {};
+          const teamCompanyCounts = {};
+          for (const c of selChars) {
+            for (const attr of (c.attributeList || [])) {
+              teamAttrCount[attr] = (teamAttrCount[attr] || 0) + 1;
+            }
+            for (const cid of (c.companyIdList || [])) {
+              teamCompanyCounts[cid] = (teamCompanyCounts[cid] || 0) + 1;
+            }
+          }
+          const maxAttrCount = Math.max(0, ...Object.values(teamAttrCount));
+          const teamCharBaseIds = new Set(selChars.flatMap(c => {
+            const ids = [c.data.CharacterBaseMasterId];
+            if (c.data.SecondaryCharacterBaseMasterId) ids.push(c.data.SecondaryCharacterBaseMasterId);
+            return ids;
+          }));
+          const teamContext = {
+            attributeCount: maxAttrCount,
+            companyCounts: teamCompanyCounts,
+            lifeGuardCount: extra.lifeGuardCount || 0,
+            hasCharacterBase: (id) => teamCharBaseIds.has(id),
+          };
+
+          // 收集角色灯光参数（带队伍上下文，精确选择 Sense 分支）
+          const charLightParams = selChars.map(c => {
+            c.resetEffects();
+            c.bloomBonusEffects.forEach(effect => {
+              switch (effect.Type) {
+                case 'SenseRecastDown': return c.senseAll.forEach(i => i.recastDown.push(effect.activeEffect.Value));
+                case 'DecreaseRequireSupportLight': return c.staract.requireDecrease[0] += effect.activeEffect.Value;
+                case 'DecreaseRequireControlLight': return c.staract.requireDecrease[1] += effect.activeEffect.Value;
+                case 'DecreaseRequireAmplificationLight': return c.staract.requireDecrease[2] += effect.activeEffect.Value;
+                case 'DecreaseRequireSpecialLight': return c.staract.requireDecrease[3] += effect.activeEffect.Value;
+              }
+            });
+            return LiveSimulator.collectLightParams(c, teamContext);
+          });
+
+          // 收集海报灯光效果（带队伍上下文，精确选择分支）
+          const posterLightEffects = selPosters.map(p => LiveSimulator.collectPosterLightEffects(p, teamContext));
+
+          // 收集饰品灯光效果
+          const accLightEffects = selAccs.map(a => LiveSimulator.collectAccessoryLightEffects(a));
+
+          // 获取时间轴
+          const notationId = extra.notationId;
+          const senseTimingData = GameDb.SenseNotation[notationId];
+          if (senseTimingData) {
+            const timeline = senseTimingData.Details.slice()
+              .sort((a, b) => a.TimingSecond - b.TimingSecond);
+
+            // 获取 StarAct 需求和存储类型
+            const starActReqs = leader.staract.actualRequirements;
+            const stockType = leader.staract.data.BranchCondition1 === "StorageSenseLightCount"
+              ? leader.staract.data.ConditionValue1 : 5;
+
+            // 生成排列池
+            const charPerms = WebGPUStarActCounter.generatePermutations(selChars.length, 5)
+              .filter(perm => perm.includes(leaderIdx));
+            const posterPermIndices = WebGPUStarActCounter.generatePermutations(posterIndices.length, posterSlots);
+            // 映射为 selPosters 中的实际索引
+            const allPosterPerms = posterPermIndices.map(perm => perm.map(i => posterIndices[i]));
+            // 过滤无效海报排列
+            const validPosterPerms = allPosterPerms.filter(pp => isPosterPermValid(pp, leaderPosterIdx, selPosters));
+            const accPerms = WebGPUStarActCounter.generatePermutations(selAccs.length, 5);
+
+            if (charPerms.length > 0 && validPosterPerms.length > 0 && accPerms.length > 0) {
+              const totalCombos = charPerms.length * validPosterPerms.length * accPerms.length;
+              console.log(`autoParty: WebGPU evaluating ${totalCombos.toLocaleString()} full combinations (${charPerms.length} × ${validPosterPerms.length} × ${accPerms.length})`);
+
+              const gpuResult = await gpuCounter.computeFilteredPools({
+                timeline,
+                charDataPool: charLightParams,
+                posterDataPool: posterLightEffects,
+                accDataPool: accLightEffects,
+                charPerms,
+                posterPerms: validPosterPerms,
+                accPerms,
+                posterSlots,
+                leaderCharIdx: leaderIdx,
+                leaderPosterIdx: leaderPosterIdx >= 0 ? leaderPosterIdx : -1,
+                starActReq: starActReqs,
+                stockType,
+              });
+
+              console.log(`autoParty: WebGPU filtered to ${gpuResult.candidates.length} candidates (max starActCount: ${gpuResult.maxCount}, threshold: ${gpuResult.threshold})`);
+
+              // 诊断：输出 max 组合的具体名称
+              if (gpuResult.maxCount > 0) {
+                const maxC = gpuResult.maxCombo;
+                if (maxC) {
+                  const cp = charPerms[maxC.cpIdx];
+                  const pp = validPosterPerms[maxC.ppIdx];
+                  const ap = accPerms[maxC.apIdx];
+                  const leaderPos = cp.indexOf(leaderIdx);
+                  const fullPoster = [];
+                  let ppI = 0;
+                  for (let i = 0; i < 5; i++) {
+                    if (i === leaderPos && leaderPosterIdx >= 0) fullPoster.push(leaderPosterIdx);
+                    else fullPoster.push(pp[ppI++]);
+                  }
+                  console.log(`[MAX COMBO NAMES] starActCount=${gpuResult.maxCount}:`);
+                  for (let i = 0; i < 5; i++) {
+                    const ch = selChars[cp[i]];
+                    const po = selPosters[fullPoster[i]];
+                    const ac = selAccs[ap[i]];
+                    const charName = ch?.fullCardName || ch?.cardName || ch?.data?.Name || `char[${cp[i]}]`;
+                    const posterName = po?.fullPosterName || po?.data?.Name || `poster[${fullPoster[i]}]`;
+                    const accName = ac?.fullAccessoryName || ac?.data?.Name || `acc[${ap[i]}]`;
+                    const senseInfo = ch?.senseAll?.map(s => `${s.Type}(${s.data?.LightCount||0},CT${s.ct})`).join('/') || '';
+                    // 输出海报/饰品灯光效果（现在是 entry 数组格式）
+                    const fieldNames = ['selfLightBonus','extraLightSupport','extraLightControl','extraLightAmplification','extraLightSpecial','extraLightVariable','decreaseReq0','decreaseReq1','decreaseReq2','decreaseReq3','recastDown'];
+                    const triggerNames = ['none','Company','Attribute','SenseType','CharacterBase'];
+                    const pEff = LiveSimulator.collectPosterLightEffects(po, teamContext);
+                    const aEff = LiveSimulator.collectAccessoryLightEffects(ac);
+                    const pEffStr = pEff.map(e => `${fieldNames[e.field]||'f'+e.field}=${e.value}${e.triggerType>0?`(${triggerNames[e.triggerType]||'T'+e.triggerType}=${e.triggerValue})`:''}`).join(', ');
+                    const aEffStr = aEff.map(e => `${fieldNames[e.field]||'f'+e.field}=${e.value}${e.triggerType>0?`(${triggerNames[e.triggerType]||'T'+e.triggerType}=${e.triggerValue})`:''}`).join(', ');
+                    console.log(`  pos${i}: ${charName} / ${posterName} / ${accName}`);
+                    console.log(`    Senses: ${senseInfo}`);
+                    if (pEffStr) console.log(`    PosterEff: ${pEffStr}`);
+                    if (aEffStr) console.log(`    AccEff: ${aEffStr}`);
+                  }
+                }
+              }
+
+              // 构建完整组合数据（映射回原始索引）
+              filteredCombinations = gpuResult.candidates.map(c => {
+                const cp = charPerms[c.cpIdx];
+                const pp = validPosterPerms[c.ppIdx];
+                const ap = accPerms[c.apIdx];
+
+                // 构建完整 5 位置海报排列（队长海报插入队长位置）
+                const leaderPos = cp.indexOf(leaderIdx);
+                const fullPoster = [];
+                let ppI = 0;
+                for (let i = 0; i < 5; i++) {
+                  if (i === leaderPos && leaderPosterIdx >= 0) {
+                    fullPoster.push(leaderPosterIdx);
+                  } else {
+                    fullPoster.push(pp[ppI++]);
+                  }
+                }
+
+                return { charPerm: cp, posterPerm: fullPoster, accPerm: ap };
+              });
+            }
+
+            gpuCounter.destroy();
+          }
+        } else {
+          console.log("autoParty: WebGPU not available, falling back to CPU");
+        }
+      } catch (err) {
+        console.warn("autoParty: WebGPU pre-filter failed, falling back to CPU:", err);
+      }
+      filterDuration = performance.now() - filterStart;
+    }
+
+    // 计算总组合数（GPU 筛选后使用实际候选数，否则使用理论总数）
+    let totalCombinations;
+    if (filteredCombinations) {
+      totalCombinations = filteredCombinations.length;
+    } else {
+      const charPermCount = AutoPartyWorkerPool.permCount(selChars.length, 5);
+      const posterPermCount = AutoPartyWorkerPool.permCount(posterIndices.length, posterSlots);
+      const accPermCount = AutoPartyWorkerPool.permCount(selAccs.length, 5);
+      totalCombinations = charPermCount * posterPermCount * accPermCount;
+    }
+
+    // 通知 UI 实际遍历次数
+    if (onTotalReady) {
+      onTotalReady(totalCombinations, !!filteredCombinations);
+    }
+
+    console.log("autoParty precise:", { totalCombinations, webGPUFiltered: !!filteredCombinations });
 
     this._autoPartyWorkerPool = new AutoPartyWorkerPool();
 
+    const scoringStart = performance.now();
     try {
       const result = await this._autoPartyWorkerPool.runSearch({
         precise: true,
@@ -2403,31 +2610,32 @@ export default class RootLogic {
         notationId: extra.notationId,
         gameDbData,
         totalCombinations,
-        topN,
+        workerCount,
         onProgress,
+        filteredCombinations,
       });
 
       if (result.bestIndices) {
         const { charIndices, posterIndices: ppIndices, accIndices } = result.bestIndices;
         const members = charIndices.map(i => selChars[i]);
-        const leaderPos = charIndices.indexOf(leaderIdx);
 
-        const posters = ppIndices.map(i => {
-          const adjustedIdx = leaderPosterIdx >= 0 && i > leaderPosterIdx ? i - 1 : i;
-          return selPosters[adjustedIdx];
-        });
-        if (leaderPosterIdx >= 0) {
-          posters.splice(leaderPos, 0, selPosters[leaderPosterIdx]);
-        }
-
+        // posterIndices 已是完整 5 元素数组（包含队长海报）
+        const posters = ppIndices.map(i => selPosters[i]);
         const accessories = accIndices.map(i => selAccs[i]);
 
-        console.log("autoParty precise done:", { bestScore: result.bestScore });
+        // GPU 模式：filterDuration 来自 GPU 筛选，scoringDuration 来自 worker pool
+        // CPU 模式：filterDuration 和 scoringDuration 都来自 worker pool
+        const finalFilterDuration = filteredCombinations ? filterDuration : (result.filterDuration || 0);
+        const finalScoringDuration = result.scoringDuration || 0;
+
+        console.log("autoParty precise done:", { bestScore: result.bestScore, filterDuration: finalFilterDuration, scoringDuration: finalScoringDuration });
         return {
           characters: members,
           posters,
           accessories,
           bestScore: result.bestScore,
+          filterDuration: finalFilterDuration,
+          scoringDuration: finalScoringDuration,
         };
       }
     } catch (err) {
