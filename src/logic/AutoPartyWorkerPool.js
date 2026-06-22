@@ -10,9 +10,14 @@ export default class AutoPartyWorkerPool {
     const maxCores = navigator.hardwareConcurrency || 4;
     const workerCount = Math.max(1, Math.min(params.workerCount || maxCores, maxCores));
 
+    // 终止旧 Worker
+    for (const w of this.workers) {
+      try { w.terminate(); } catch (_) {}
+    }
     this.isRunning = true;
     this.shouldStop = false;
     this.workers = [];
+    console.log(`[Pool] runSearch: workerCount=${workerCount}, comboData=${params.comboData ? params.comboData.length : 'N/A'}`);
 
     let completedWorkers = 0;
     const workerProgresses = new Array(workerCount).fill(0);
@@ -113,6 +118,7 @@ export default class AutoPartyWorkerPool {
             case 'PHASE1_DONE': {
               workerMaxSAs[i] = data.maxSA || 0;
               phase1DoneCount++;
+              console.log(`[Pool] Worker ${i} PHASE1_DONE, ${phase1DoneCount}/${workerCount}`);
               if (phase1DoneCount === workerCount && !thresholdBroadcast) {
                 thresholdBroadcast = true;
                 const globalMaxSA = Math.max(...workerMaxSAs);
@@ -130,6 +136,7 @@ export default class AutoPartyWorkerPool {
                 bestIndices = data.bestIndices;
               }
               completedWorkers++;
+              console.log(`[Pool] Worker ${i} COMPLETE, ${completedWorkers}/${workerCount}, bestScore=${data.bestScore}`);
 
               if (completedWorkers === workerCount) {
                 this.isRunning = false;
@@ -161,15 +168,20 @@ export default class AutoPartyWorkerPool {
           }
         };
 
-        const { onProgress: _op, onWorkerProgress: _owp, totalCombinations: _tc, ...workerData } = params;
-        worker.postMessage({
+        const { onProgress: _op, onWorkerProgress: _owp, totalCombinations: _tc, comboData, ...workerData } = params;
+        const msg = {
           type: 'START_SEARCH',
           data: {
             ...workerData,
             workerId: i,
             totalWorkers: workerCount,
           }
-        });
+        };
+        // comboData: 为每个 Worker 创建副本（transfer 后原 buffer 不可用）
+        if (comboData) {
+          msg.data.comboData = new Uint32Array(comboData);
+        }
+        worker.postMessage(msg);
       }
     });
   }

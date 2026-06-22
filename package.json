@@ -42,6 +42,13 @@
       "electron/**/*",
       "tbm.ico"
     ],
+    "extraResources": [
+      {
+        "from": "pyScript",
+        "to": "pyScript",
+        "filter": ["**/*"]
+      }
+    ],
     "win": {
       "target": "portable",
       "icon": "./tbm.ico"

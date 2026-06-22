@@ -2646,6 +2646,230 @@ export default class RootLogic {
     return null;
   }
 
+  /**
+   * Python 脚本配队（流式分批）：边接收 Python 结果边分批送 Worker 评分，避免一次性加载全部数据
+   */
+  async handleAutoPartyPythonStream({
+    selChars,
+    selPosters,
+    selAccs,
+    leader,
+    leaderPoster,
+    batchReader,
+    onProgress,
+    workerCount,
+  }) {
+    const leaderIdx = selChars.indexOf(leader);
+    const leaderPosterIdx = leaderPoster ? selPosters.indexOf(leaderPoster) : -1;
+
+    // 构建 ID → 索引映射
+    const charIdToIdx = new Map();
+    selChars.forEach((c, i) => { if (!charIdToIdx.has(c.Id)) charIdToIdx.set(c.Id, []); charIdToIdx.get(c.Id).push(i); });
+    const posterIdToIdx = new Map();
+    selPosters.forEach((p, i) => { if (!posterIdToIdx.has(p.id)) posterIdToIdx.set(p.id, []); posterIdToIdx.get(p.id).push(i); });
+    const accIdToIdx = new Map();
+    selAccs.forEach((a, i) => { if (!accIdToIdx.has(a.id)) accIdToIdx.set(a.id, []); accIdToIdx.get(a.id).push(i); });
+    
+    // accIdToIdx转为json输出
+    console.log(`[handleAutoPartyPythonStream] accIdToIdx:`,accIdToIdx);
+    // 序列化固定数据（只需一次）
+    const charactersJson = selChars.map(c => c.toJSON());
+    const postersJson = selPosters.map(p => p.toJSON());
+    let accessoriesJson = selAccs.map(a => a.toJSON());
+    const starRankData = root.appState.characterStarRank ? root.appState.characterStarRank.toJSON() : {};
+    const theaterLevelData = root.appState.theaterLevel ? root.appState.theaterLevel.toJSON() : { Sirius: 0, Eden: 0, Gingaza: 0, Denki: 0 };
+    const albumExtraJson = (this.appState.albumExtra || []).map(pe => pe.toJSON());
+    const highScoreEffectData = (root.appState.highScoreBuffManager ? root.appState.highScoreBuffManager.currentActiveEffects() : []).map(e => ({ id: e.data.Id, level: e.level || 1 }));
+    const gameDbKeys = ['Character','CharacterBase','CharacterLevel','CharacterBloomBonusGroup','CharacterStarRank','Sense','StarAct','StarActCondition','LeaderSense','Category','AlbumEffect','PhotoEffect','Effect','EffectTriggerCharacterBaseGroup','Poster','PosterAbility','Accessory','AccessoryEffect','RandomEffectGroup','SenseNotation','CircleSupportCompanyLevelDetail'];
+    const gameDbData = {};
+    gameDbKeys.forEach(key => { gameDbData[key] = GameDb[key]; });
+
+    let overallBestScore = -1;
+    let overallBestResult = null;
+    let totalProcessed = 0;
+    let batchCount = 0;
+
+    // 创建 Worker 池（复用）
+    this._autoPartyWorkerPool = new AutoPartyWorkerPool();
+
+    // processBatch 回调：处理一批结果
+    const processBatch = async (batch) => {
+      batchCount++;
+      const filteredCombinations = [];
+
+      const targetFirst10 = [150030, 142420, 150020, 150040, 150010, 330250, 330390, 230640, 231010, 230110];
+      const matchedRows = [];
+
+      for (const row of batch) {
+        const charIds = row.slice(0, 5);
+        const posterIds = row.slice(5, 10);
+        const accIds = row.slice(10, 15);
+
+        // 检查是否匹配目标前10个元素
+        const isMatch = targetFirst10.every((tid, ti) => {
+          if (ti < 5) return charIds[ti] === tid;
+          return posterIds[ti - 5] === tid;
+        });
+        if (isMatch) matchedRows.push(row);
+
+        // 检查并创建缺失饰品
+        for (const id of accIds) {
+          if (!accIdToIdx.has(id)) {
+            try {
+              const acc = new AccessoryData(id, null);
+              acc.level = 10;
+              acc.mainEffects.forEach(i => { i.level = 10; i.effect.level = 10; });
+              const idx = selAccs.length;
+              selAccs.push(acc);
+              accIdToIdx.set(id, [idx]);
+              accessoriesJson = selAccs.map(a => a.toJSON()); // 更新序列化数据
+            } catch (err) {
+              accIdToIdx.set(id, []); // 标记为无效
+            }
+          }
+        }
+
+        const charUsed = new Map();
+        const charPerm = [];
+        let ok = true;
+        for (const id of charIds) {
+          const pool = charIdToIdx.get(id);
+          if (!pool) { ok = false; break; }
+          const used = charUsed.get(id) || 0;
+          if (used >= pool.length) { ok = false; break; }
+          charPerm.push(pool[used]);
+          charUsed.set(id, used + 1);
+        }
+        if (!ok) continue;
+
+        const accUsed = new Map();
+        const accPerm = [];
+        ok = true;
+        for (const id of accIds) {
+          const pool = accIdToIdx.get(id);
+          if (!pool || pool.length === 0) { ok = false; break; }
+          const used = accUsed.get(id) || 0;
+          if (used >= pool.length) {
+            // 不够用，自动创建新饰品副本
+            try {
+              const acc = new AccessoryData(id, null);
+              acc.level = 10;
+              acc.mainEffects.forEach(i => { i.level = 10; i.effect.level = 10; });
+              const idx = selAccs.length;
+              selAccs.push(acc);
+              pool.push(idx);
+              accessoriesJson = selAccs.map(a => a.toJSON());
+            } catch (err) { ok = false; break; }
+          }
+          accPerm.push(pool[used]);
+          accUsed.set(id, used + 1);
+        }
+        if (!ok) continue;
+
+        // 构建海报排列：队长海报放在队长角色所在位置，其余用 Python 返回的海报
+        const leaderPos = charPerm.indexOf(leaderIdx);
+        const posterUsed2 = new Map();
+        const posterIdToIdxCopy = new Map();
+        posterIdToIdx.forEach((v, k) => posterIdToIdxCopy.set(k, [...v]));
+        const fullPosterIndices = [];
+        for (let pos = 0; pos < 5; pos++) {
+          if (pos === leaderPos && leaderPosterIdx >= 0) {
+            fullPosterIndices.push(leaderPosterIdx);
+          } else {
+            const id = posterIds[pos];
+            const pool = posterIdToIdxCopy.get(id);
+            if (!pool) { ok = false; break; }
+            const used = posterUsed2.get(id) || 0;
+            if (used >= pool.length) { ok = false; break; }
+            fullPosterIndices.push(pool[used]);
+            posterUsed2.set(id, used + 1);
+          }
+        }
+        if (!ok) continue;
+        filteredCombinations.push({ charPerm, posterPerm: fullPosterIndices, accPerm });
+      }
+
+      totalProcessed += batch.length;
+      console.log(`[Python batch ${batchCount}] raw=${batch.length}, filtered=${filteredCombinations.length}, totalProcessed=${totalProcessed}`);
+
+      if (filteredCombinations.length === 0) { console.log(`[Python batch ${batchCount}] skip empty batch`); return; }
+
+      // 打包
+      const comboCount = filteredCombinations.length;
+      const flatData = new Uint32Array(comboCount * 15);
+      for (let i = 0; i < comboCount; i++) {
+        const c = filteredCombinations[i];
+        const b = i * 15;
+        for (let j = 0; j < 5; j++) { flatData[b+j] = c.charPerm[j]; flatData[b+5+j] = c.posterPerm[j]; flatData[b+10+j] = c.accPerm[j]; }
+      }
+
+      console.log(`[Python batch ${batchCount}] ${batch.length} results → ${comboCount} combos (${(flatData.byteLength/1024/1024).toFixed(1)}MB)`);
+
+      try {
+        const result = await this._autoPartyWorkerPool.runSearch({
+          precise: true, charactersJson, postersJson, accessoriesJson,
+          leaderIdx, leaderPosterIdx, starRankData,
+          albumLevel: this.appState.albumLevel, albumExtraJson,
+          highScoreEffectData, theaterLevelData,
+          notationId: this.senseNoteSelect ? this.senseNoteSelect.value | 0 : 0,
+          gameDbData, totalCombinations: comboCount, workerCount,
+          comboData: flatData, onProgress: onProgress || (() => {}),
+        });
+
+        if (result && result.bestScore > overallBestScore) {
+          overallBestScore = result.bestScore;
+          const { charIndices, posterIndices: ppIndices, accIndices } = result.bestIndices;
+          overallBestResult = {
+            characters: charIndices.map(i => selChars[i]),
+            posters: ppIndices.map(i => selPosters[i]),
+            accessories: accIndices.map(i => selAccs[i]),
+            bestScore: result.bestScore,
+          };
+        }
+
+        // 计算匹配行的分数
+        if (matchedRows.length > 0) {
+          const extra = {
+            albumLevel: this.appState.albumLevel,
+            albumExtra: this.appState.albumExtra,
+            leader: selChars[leaderIdx],
+            type: ScoreCalculationType.Normal,
+            notationId: this.senseNoteSelect ? this.senseNoteSelect.value | 0 : 0,
+            highScoreEffects: root.appState.highScoreBuffManager ? root.appState.highScoreBuffManager.currentActiveEffects().map(e => ({ id: e.data.Id, level: e.level || 1 })) : [],
+            theaterEffects: root.appState.theaterLevel ? root.appState.theaterLevel.getEffects() : [],
+          };
+          for (const row of matchedRows) {
+            const charIds = row.slice(0, 5);
+            const posterIds = row.slice(5, 10);
+            const accIds = row.slice(10, 15);
+            const members = charIds.map(id => selChars[charIdToIdx.get(id)?.[0]]).filter(Boolean);
+            const posters = posterIds.map(id => selPosters[posterIdToIdx.get(id)?.[0]]).filter(Boolean);
+            const accessories = accIds.map(id => selAccs[accIdToIdx.get(id)?.[0]]).filter(Boolean);
+            if (members.length === 5 && posters.length === 5 && accessories.length === 5) {
+              try {
+                const calc = new ScoreCalculator(members, posters, accessories, extra);
+                LiveSimulator.saDelayLastTiming = null;
+                calc.calcPure();
+                const totalScore = calc.result ? (calc.result.totalScore || (calc.result.baseScore[3] + calc.result.senseScore.reduce((a, b) => a + b, 0) + calc.result.starActScore.reduce((a, b) => a + b, 0))) : 0;
+                console.log(`[匹配队伍] 前10=${JSON.stringify(charIds.concat(posterIds))} 饰品=${JSON.stringify(accIds)} 分数=${totalScore}`);
+              } catch (err) {
+                console.error(`[匹配队伍] 计算出错:`, err.message);
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`[Python batch ${batchCount}] worker error:`, err);
+      }
+    };
+
+    // 启动流式读取 + 分批处理
+    await batchReader(processBatch);
+
+    console.log(`[handleAutoPartyPythonStream] done: ${totalProcessed} results, ${batchCount} batches, bestScore=${overallBestScore}`);
+    return overallBestResult;
+  }
+
   keikoFillChara() {
     const keikoCharaId = this.keikoSelect.value | 0;
     if (!keikoCharaId) {

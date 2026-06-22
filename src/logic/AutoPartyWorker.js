@@ -38,7 +38,13 @@ self.onmessage = (e) => {
     case 'START_SEARCH':
       STATE.isRunning = true;
       STATE.shouldStop = false;
-      runSearch(data);
+      runSearch(data).catch(err => {
+        console.error(`Worker fatal error:`, err);
+        self.postMessage({
+          type: 'COMPLETE',
+          data: { bestScore: -1, bestIndices: null, processed: 0, errors: 1 }
+        });
+      });
       break;
     case 'STOP_SEARCH':
       STATE.shouldStop = true;
@@ -68,7 +74,25 @@ async function runSearch(params) {
     theaterLevelData,
     notationId,
     gameDbData,
+    comboData,
   } = params;
+
+  // 从 flat Uint32Array 解包组合
+  let filteredCombinations = params.filteredCombinations;
+  if (comboData) {
+    const VALUES_PER_COMBO = 15;
+    const comboCount = comboData.length / VALUES_PER_COMBO;
+    filteredCombinations = new Array(comboCount);
+    for (let i = 0; i < comboCount; i++) {
+      const base = i * VALUES_PER_COMBO;
+      filteredCombinations[i] = {
+        charPerm: [comboData[base], comboData[base+1], comboData[base+2], comboData[base+3], comboData[base+4]],
+        posterPerm: [comboData[base+5], comboData[base+6], comboData[base+7], comboData[base+8], comboData[base+9]],
+        accPerm: [comboData[base+10], comboData[base+11], comboData[base+12], comboData[base+13], comboData[base+14]],
+      };
+    }
+    console.log(`Worker ${workerId}: unpacked ${comboCount} combos from flat array`);
+  }
 
   Object.entries(starRankData).forEach(([id, rank]) => {
     mockStarRank.set(Number(id), rank);
@@ -156,9 +180,6 @@ async function runSearch(params) {
     theaterEffects: theaterEffects,
   };
 
-  // GPU 预筛选的完整组合
-  const filteredCombinations = params.filteredCombinations || null;
-
   let bestScore = -1;
   let bestIndices = null;
   let count = 0;
@@ -166,18 +187,75 @@ async function runSearch(params) {
   let lastReportTime = Date.now();
 
   if (filteredCombinations) {
-    // ===== GPU 预筛选模式：直接计算完整分数 =====
+    // ===== 预筛选模式：两阶段（SA 筛选 + 完整评分）=====
     const total = filteredCombinations.length;
     const chunkSize = Math.ceil(total / totalWorkers);
     const startIdx = workerId * chunkSize;
     const endIdx = Math.min(startIdx + chunkSize, total);
+    const chunkTotal = endIdx - startIdx;
 
-    console.log(`Worker ${workerId}: GPU pre-filtered mode, ${endIdx - startIdx} combinations to score`);
+    console.log(`Worker ${workerId}: pre-filtered mode, ${chunkTotal} combinations, phase 1: SA counting`);
+
+    // 阶段 1：计算 starActCount
+    const candidates = [];
+    let localMaxSA = 0;
 
     for (let i = startIdx; i < endIdx && !STATE.shouldStop; i++) {
       const combo = filteredCombinations[i];
       const cp = combo.charPerm;
-      const fullPosterIndices = combo.posterPerm; // 已包含队长海报的完整 5 元素数组
+      const fullPosterIndices = combo.posterPerm;
+      const ap = combo.accPerm;
+
+      const members = cp.map(j => selChars[j]);
+      const leaderPos = cp.indexOf(leaderIdx);
+      const posters = fullPosterIndices.map(j => selPosters[j]);
+      const accessories = ap.map(j => selAccs[j]);
+
+      try {
+        const leader = members[leaderPos];
+        if (!leader) { count++; continue; }
+
+        const calcExtra = { ...extra, leader };
+        const calc = new ScoreCalculator(members, posters, accessories, calcExtra);
+        LiveSimulator.saDelayLastTiming = null;
+        const sa = calc.calcStarActCountOnly();
+
+        candidates.push({ sa, combo });
+        if (sa > localMaxSA) localMaxSA = sa;
+      } catch (err) {
+        errorCount++;
+        if (errorCount <= 5) console.error("calcStarActCountOnly error:", err.message);
+      }
+
+      count++;
+      const now = Date.now();
+      if (now - lastReportTime > 200) {
+        self.postMessage({ type: 'PROGRESS', data: { current: count, total: chunkTotal, bestScore: 0, errorCount, phase: 'counting' } });
+        lastReportTime = now;
+      }
+    }
+
+    self.postMessage({ type: 'PROGRESS', data: { current: count, total: chunkTotal, bestScore: 0, errorCount, phase: 'counting' } });
+
+    // 报告本地 maxSA，等待全局阈值
+    self.postMessage({ type: 'PHASE1_DONE', data: { maxSA: localMaxSA, candidateCount: candidates.length } });
+
+    const globalThreshold = await new Promise(resolve => {
+      self._resolveThreshold = resolve;
+    });
+
+    // 阶段 2：筛选 + 完整评分
+    const filtered = candidates.filter(c => c.sa >= globalThreshold);
+    count = 0;
+    lastReportTime = Date.now();
+
+    console.log(`Worker ${workerId}: phase 2, threshold=${globalThreshold}, scoring ${filtered.length}/${candidates.length}`);
+
+    for (const { combo } of filtered) {
+      if (STATE.shouldStop) break;
+
+      const cp = combo.charPerm;
+      const fullPosterIndices = combo.posterPerm;
       const ap = combo.accPerm;
 
       const members = cp.map(j => selChars[j]);
@@ -213,11 +291,10 @@ async function runSearch(params) {
       count++;
       const now = Date.now();
       if (now - lastReportTime > 200) {
-        self.postMessage({ type: 'PROGRESS', data: { current: count, total: endIdx - startIdx, bestScore, errorCount, phase: 'scoring' } });
+        self.postMessage({ type: 'PROGRESS', data: { current: count, total: filtered.length, bestScore, errorCount, phase: 'scoring' } });
         lastReportTime = now;
       }
     }
-    // 最终进度
     self.postMessage({ type: 'PROGRESS', data: { current: count, total: count, bestScore, errorCount, phase: 'scoring' } });
 
   } else {
