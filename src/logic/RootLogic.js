@@ -109,6 +109,52 @@ export default class RootLogic {
       Buffs: [],
     };
 
+    // 体力消耗时间轴数据
+    this.staminaNotationData = [
+      {
+        label: "30",
+        Details: [
+          [13, 1],
+          [26, 2],
+          [39, 3],
+          [52, 4],
+          [65, 5],
+          [78, 3],
+          [91, 2],
+          [104, 1],
+        ],
+      },
+      {
+        label: "36",
+        Details: [
+          [17, 1],
+          [34, 2],
+          [51, 3],
+          [68, 4],
+          [85, 5],
+          [102, 3],
+          [119, 2],
+          [136, 1],
+        ],
+      },
+      {
+        label: "42",
+        Details: [
+          [21, 1],
+          [42, 2],
+          [63, 3],
+          [84, 4],
+          [105, 5],
+          [126, 3],
+          [147, 2],
+          [168, 1],
+        ],
+      },
+    ];
+
+    // 常驻时间轴默认Details备份
+    this.defaultStaminaDetails = GameDb.SenseNotation[0].Details;
+
     document.getElementById("loading").remove();
     document.getElementById("app").appendChild(
       _("div", {}, [
@@ -182,9 +228,15 @@ export default class RootLogic {
           ],
         )),
         (this.normalCalcTabContent = _("div", {}, [
-          (this.senseNoteSelect = _("select", {
-            event: { change: (_) => this.renderSenseNote() },
-          })),
+          _("div", {}, [
+            (this.senseNoteSelect = _("select", {
+              event: { change: (_) => this.renderSenseNote() },
+            })),
+            (this.staminaSelect = _("select", {
+              event: { change: (_) => this.updateStaminaNotation() },
+              style: { marginLeft: "8px", display: "none" },
+            })),
+          ]),
           (this.senseBox = _("div", { className: "sense-render-box" })),
           (this.highscoreCalcTabContent = _("div", {}, [
             _("span", { "data-text-key": "HIGHSCORE_BUFF_LABEL" }),
@@ -335,6 +387,20 @@ export default class RootLogic {
             "data-text-value": "ADD",
             event: { click: (e) => this.addPhotoEffect() },
           }),
+
+          _("input", {
+            type: "button",
+            value: "批量删除xx等级以下照片",
+            event: { click: (_) => this.batchRemovePhotoEffect() },
+            style: { marginLeft: "2em" },
+          }),
+          (this.batchDeleteLevelInput = _("input", {
+            type: "number",
+            min: "1",
+            max: "30",
+            value: "10",
+            style: { width: "3em" },
+          })),
         ]),
 
         _("div", { className: "margin-box" }),
@@ -712,6 +778,17 @@ export default class RootLogic {
     );
 
     this.renderSenseNoteList();
+
+    // 初始化体力消耗下拉框
+    this.staminaSelect.appendChild(
+      _("option", { value: "default" }, [_("text", "默认")]),
+    );
+    this.staminaNotationData.forEach((item, index) => {
+      this.staminaSelect.appendChild(
+        _("option", { value: index }, [_("text", `耗体${item.label}`)]),
+      );
+    });
+
     this.keikoSelect.appendChild(
       _("option", { value: "", "data-text-key": "NOT_SELECTED" }, [
         _("text", "未選択"),
@@ -1347,6 +1424,15 @@ export default class RootLogic {
   removePhotoEffect(pe) {
     this.appState.albumExtra.splice(this.appState.albumExtra.indexOf(pe), 1);
     this.update({ album: true });
+  }
+  batchRemovePhotoEffect() {
+    const threshold = this.batchDeleteLevelInput.value | 0;
+    if (threshold < 1 || threshold > 30) return;
+    const toRemove = this.appState.albumExtra.filter(
+      (pe) => pe.level < threshold,
+    );
+    if (toRemove.length === 0) return;
+    toRemove.forEach((pe) => pe.remove());
   }
 
   addPoster(posterId) {
@@ -2005,6 +2091,10 @@ export default class RootLogic {
     const id = this.senseNoteSelect.value | 0;
     const data = GameDb.SenseNotation[id];
     this.appState.selectedNotation = id;
+
+    // 只有选择常驻时间轴(id=0)时才显示体力下拉框
+    this.staminaSelect.style.display = id === 0 ? "" : "none";
+
     removeAllChilds(this.senseBox);
     for (let i = 0; i < 5; i++) {
       this.senseBox.appendChild(
@@ -2068,6 +2158,27 @@ export default class RootLogic {
 
     if (!skipUpdate) {
       this.update({ party: true });
+    }
+  }
+
+  updateStaminaNotation() {
+    const selectedIndex = this.staminaSelect.value;
+
+    if (selectedIndex === "default") {
+      // 恢复默认时间轴
+      GameDb.SenseNotation[0].Details = this.defaultStaminaDetails;
+    } else {
+      // 更新为选择的体力消耗时间轴
+      const data = this.staminaNotationData[selectedIndex];
+      GameDb.SenseNotation[0].Details = data.Details.map((i) => ({
+        Position: i[1],
+        TimingSecond: i[0],
+      }));
+    }
+
+    // 如果当前选择的是常驻时间轴(id=0)，则重新渲染并更新分数
+    if ((this.senseNoteSelect.value | 0) === 0) {
+      this.renderSenseNote();
     }
   }
 
@@ -2262,22 +2373,22 @@ export default class RootLogic {
     while (improved) {
       improved = false;
       twoOptRound++;
-      
+
       for (let si = 0; si < selectedArray.length; si++) {
         for (let ui = 0; ui < unselectedArray.length; ui++) {
           const sIdx = selectedArray[si];
           const uIdx = unselectedArray[ui];
-          
+
           btn.value = `二次评估 轮数 ${twoOptRound}: ${si * unselectedArray.length + ui}/${selectedArray.length * unselectedArray.length}`;
           if ((si * unselectedArray.length + ui) % 10 === 0) {
             await new Promise((r) => setTimeout(r, 0));
           }
-          
+
           // 尝试 swap: 禁用 sIdx, 启用 uIdx
           items[sIdx].enabled = false;
           items[uIdx].enabled = true;
           const newScore = getScore();
-          
+
           if (newScore > currentScore) {
             // 找到提升，执行 swap
             currentScore = newScore;
@@ -2333,7 +2444,9 @@ export default class RootLogic {
     }
 
     const leaderIdx = selChars.indexOf(leader);
-    const leaderPosterIdx = leaderPoster ? selPosters.indexOf(leaderPoster) : -1;
+    const leaderPosterIdx = leaderPoster
+      ? selPosters.indexOf(leaderPoster)
+      : -1;
 
     const extra = {
       albumLevel: this.appState.albumLevel,
@@ -2349,11 +2462,13 @@ export default class RootLogic {
         : [],
     };
 
-    console.log("autoParty precise mode: Worker-based full ScoreCalculator search");
+    console.log(
+      "autoParty precise mode: Worker-based full ScoreCalculator search",
+    );
 
-    const charactersJson = selChars.map(c => c.toJSON());
-    const postersJson = selPosters.map(p => p.toJSON());
-    const accessoriesJson = selAccs.map(a => a.toJSON());
+    const charactersJson = selChars.map((c) => c.toJSON());
+    const postersJson = selPosters.map((p) => p.toJSON());
+    const accessoriesJson = selAccs.map((a) => a.toJSON());
 
     const starRankData = root.appState.characterStarRank
       ? root.appState.characterStarRank.toJSON()
@@ -2363,22 +2478,42 @@ export default class RootLogic {
       ? root.appState.theaterLevel.toJSON()
       : { Sirius: 0, Eden: 0, Gingaza: 0, Denki: 0 };
 
-    const highScoreEffectData = (extra.highScoreEffects || []).map(e => ({
+    const highScoreEffectData = (extra.highScoreEffects || []).map((e) => ({
       id: e.data.Id,
       level: e.level || 1,
     }));
 
-    const albumExtraJson = (this.appState.albumExtra || []).map(pe => pe.toJSON());
+    const albumExtraJson = (this.appState.albumExtra || []).map((pe) =>
+      pe.toJSON(),
+    );
 
     const gameDbKeys = [
-      'Character', 'CharacterBase', 'CharacterLevel', 'CharacterBloomBonusGroup',
-      'CharacterStarRank', 'Sense', 'StarAct', 'StarActCondition', 'LeaderSense',
-      'Category', 'AlbumEffect', 'PhotoEffect', 'Effect', 'EffectTriggerCharacterBaseGroup',
-      'Poster', 'PosterAbility', 'Accessory', 'AccessoryEffect', 'RandomEffectGroup',
-      'SenseNotation', 'CircleSupportCompanyLevelDetail',
+      "Character",
+      "CharacterBase",
+      "CharacterLevel",
+      "CharacterBloomBonusGroup",
+      "CharacterStarRank",
+      "Sense",
+      "StarAct",
+      "StarActCondition",
+      "LeaderSense",
+      "Category",
+      "AlbumEffect",
+      "PhotoEffect",
+      "Effect",
+      "EffectTriggerCharacterBaseGroup",
+      "Poster",
+      "PosterAbility",
+      "Accessory",
+      "AccessoryEffect",
+      "RandomEffectGroup",
+      "SenseNotation",
+      "CircleSupportCompanyLevelDetail",
     ];
     const gameDbData = {};
-    gameDbKeys.forEach(key => { gameDbData[key] = GameDb[key]; });
+    gameDbKeys.forEach((key) => {
+      gameDbData[key] = GameDb[key];
+    });
 
     // ===== WebGPU 预筛选：过滤完整组合（角色 × 海报 × 饰品）=====
     let filteredCombinations = null;
@@ -2389,7 +2524,8 @@ export default class RootLogic {
     const isPosterPermValid = (posterPerm, lpIdx, allPosters) => {
       const usedRestrictGroups = new Set();
       if (lpIdx >= 0) {
-        const leaderRestrictId = allPosters[lpIdx]?.data?.OrganizeRestrictGroupId;
+        const leaderRestrictId =
+          allPosters[lpIdx]?.data?.OrganizeRestrictGroupId;
         if (leaderRestrictId) usedRestrictGroups.add(leaderRestrictId);
       }
       for (let i = 0; i < posterPerm.length; i++) {
@@ -2404,13 +2540,17 @@ export default class RootLogic {
       return true;
     };
 
-    const posterIndices = selPosters.map((_, i) => i).filter(i => i !== leaderPosterIdx);
+    const posterIndices = selPosters
+      .map((_, i) => i)
+      .filter((i) => i !== leaderPosterIdx);
     const posterSlots = leaderPosterIdx === -1 ? 5 : 4;
 
     if (useWebGPU && selChars.length >= 5) {
       const filterStart = performance.now();
       try {
-        console.log("autoParty: attempting WebGPU full-combination pre-filter...");
+        console.log(
+          "autoParty: attempting WebGPU full-combination pre-filter...",
+        );
         const gpuCounter = new WebGPUStarActCounter();
         const gpuOk = await gpuCounter.init();
         if (gpuOk) {
@@ -2418,19 +2558,22 @@ export default class RootLogic {
           const teamAttrCount = {};
           const teamCompanyCounts = {};
           for (const c of selChars) {
-            for (const attr of (c.attributeList || [])) {
+            for (const attr of c.attributeList || []) {
               teamAttrCount[attr] = (teamAttrCount[attr] || 0) + 1;
             }
-            for (const cid of (c.companyIdList || [])) {
+            for (const cid of c.companyIdList || []) {
               teamCompanyCounts[cid] = (teamCompanyCounts[cid] || 0) + 1;
             }
           }
           const maxAttrCount = Math.max(0, ...Object.values(teamAttrCount));
-          const teamCharBaseIds = new Set(selChars.flatMap(c => {
-            const ids = [c.data.CharacterBaseMasterId];
-            if (c.data.SecondaryCharacterBaseMasterId) ids.push(c.data.SecondaryCharacterBaseMasterId);
-            return ids;
-          }));
+          const teamCharBaseIds = new Set(
+            selChars.flatMap((c) => {
+              const ids = [c.data.CharacterBaseMasterId];
+              if (c.data.SecondaryCharacterBaseMasterId)
+                ids.push(c.data.SecondaryCharacterBaseMasterId);
+              return ids;
+            }),
+          );
           const teamContext = {
             attributeCount: maxAttrCount,
             companyCounts: teamCompanyCounts,
@@ -2439,51 +2582,88 @@ export default class RootLogic {
           };
 
           // 收集角色灯光参数（带队伍上下文，精确选择 Sense 分支）
-          const charLightParams = selChars.map(c => {
+          const charLightParams = selChars.map((c) => {
             c.resetEffects();
-            c.bloomBonusEffects.forEach(effect => {
+            c.bloomBonusEffects.forEach((effect) => {
               switch (effect.Type) {
-                case 'SenseRecastDown': return c.senseAll.forEach(i => i.recastDown.push(effect.activeEffect.Value));
-                case 'DecreaseRequireSupportLight': return c.staract.requireDecrease[0] += effect.activeEffect.Value;
-                case 'DecreaseRequireControlLight': return c.staract.requireDecrease[1] += effect.activeEffect.Value;
-                case 'DecreaseRequireAmplificationLight': return c.staract.requireDecrease[2] += effect.activeEffect.Value;
-                case 'DecreaseRequireSpecialLight': return c.staract.requireDecrease[3] += effect.activeEffect.Value;
+                case "SenseRecastDown":
+                  return c.senseAll.forEach((i) =>
+                    i.recastDown.push(effect.activeEffect.Value),
+                  );
+                case "DecreaseRequireSupportLight":
+                  return (c.staract.requireDecrease[0] +=
+                    effect.activeEffect.Value);
+                case "DecreaseRequireControlLight":
+                  return (c.staract.requireDecrease[1] +=
+                    effect.activeEffect.Value);
+                case "DecreaseRequireAmplificationLight":
+                  return (c.staract.requireDecrease[2] +=
+                    effect.activeEffect.Value);
+                case "DecreaseRequireSpecialLight":
+                  return (c.staract.requireDecrease[3] +=
+                    effect.activeEffect.Value);
               }
             });
             return LiveSimulator.collectLightParams(c, teamContext);
           });
 
           // 收集海报灯光效果（带队伍上下文，精确选择分支）
-          const posterLightEffects = selPosters.map(p => LiveSimulator.collectPosterLightEffects(p, teamContext));
+          const posterLightEffects = selPosters.map((p) =>
+            LiveSimulator.collectPosterLightEffects(p, teamContext),
+          );
 
           // 收集饰品灯光效果
-          const accLightEffects = selAccs.map(a => LiveSimulator.collectAccessoryLightEffects(a));
+          const accLightEffects = selAccs.map((a) =>
+            LiveSimulator.collectAccessoryLightEffects(a),
+          );
 
           // 获取时间轴
           const notationId = extra.notationId;
           const senseTimingData = GameDb.SenseNotation[notationId];
           if (senseTimingData) {
-            const timeline = senseTimingData.Details.slice()
-              .sort((a, b) => a.TimingSecond - b.TimingSecond);
+            const timeline = senseTimingData.Details.slice().sort(
+              (a, b) => a.TimingSecond - b.TimingSecond,
+            );
 
             // 获取 StarAct 需求和存储类型
             const starActReqs = leader.staract.actualRequirements;
-            const stockType = leader.staract.data.BranchCondition1 === "StorageSenseLightCount"
-              ? leader.staract.data.ConditionValue1 : 5;
+            const stockType =
+              leader.staract.data.BranchCondition1 === "StorageSenseLightCount"
+                ? leader.staract.data.ConditionValue1
+                : 5;
 
             // 生成排列池
-            const charPerms = WebGPUStarActCounter.generatePermutations(selChars.length, 5)
-              .filter(perm => perm.includes(leaderIdx));
-            const posterPermIndices = WebGPUStarActCounter.generatePermutations(posterIndices.length, posterSlots);
+            const charPerms = WebGPUStarActCounter.generatePermutations(
+              selChars.length,
+              5,
+            ).filter((perm) => perm.includes(leaderIdx));
+            const posterPermIndices = WebGPUStarActCounter.generatePermutations(
+              posterIndices.length,
+              posterSlots,
+            );
             // 映射为 selPosters 中的实际索引
-            const allPosterPerms = posterPermIndices.map(perm => perm.map(i => posterIndices[i]));
+            const allPosterPerms = posterPermIndices.map((perm) =>
+              perm.map((i) => posterIndices[i]),
+            );
             // 过滤无效海报排列
-            const validPosterPerms = allPosterPerms.filter(pp => isPosterPermValid(pp, leaderPosterIdx, selPosters));
-            const accPerms = WebGPUStarActCounter.generatePermutations(selAccs.length, 5);
+            const validPosterPerms = allPosterPerms.filter((pp) =>
+              isPosterPermValid(pp, leaderPosterIdx, selPosters),
+            );
+            const accPerms = WebGPUStarActCounter.generatePermutations(
+              selAccs.length,
+              5,
+            );
 
-            if (charPerms.length > 0 && validPosterPerms.length > 0 && accPerms.length > 0) {
-              const totalCombos = charPerms.length * validPosterPerms.length * accPerms.length;
-              console.log(`autoParty: WebGPU evaluating ${totalCombos.toLocaleString()} full combinations (${charPerms.length} × ${validPosterPerms.length} × ${accPerms.length})`);
+            if (
+              charPerms.length > 0 &&
+              validPosterPerms.length > 0 &&
+              accPerms.length > 0
+            ) {
+              const totalCombos =
+                charPerms.length * validPosterPerms.length * accPerms.length;
+              console.log(
+                `autoParty: WebGPU evaluating ${totalCombos.toLocaleString()} full combinations (${charPerms.length} × ${validPosterPerms.length} × ${accPerms.length})`,
+              );
 
               const gpuResult = await gpuCounter.computeFilteredPools({
                 timeline,
@@ -2500,7 +2680,9 @@ export default class RootLogic {
                 stockType,
               });
 
-              console.log(`autoParty: WebGPU filtered to ${gpuResult.candidates.length} candidates (max starActCount: ${gpuResult.maxCount}, threshold: ${gpuResult.threshold})`);
+              console.log(
+                `autoParty: WebGPU filtered to ${gpuResult.candidates.length} candidates (max starActCount: ${gpuResult.maxCount}, threshold: ${gpuResult.threshold})`,
+              );
 
               // 诊断：输出 max 组合的具体名称
               if (gpuResult.maxCount > 0) {
@@ -2513,26 +2695,78 @@ export default class RootLogic {
                   const fullPoster = [];
                   let ppI = 0;
                   for (let i = 0; i < 5; i++) {
-                    if (i === leaderPos && leaderPosterIdx >= 0) fullPoster.push(leaderPosterIdx);
+                    if (i === leaderPos && leaderPosterIdx >= 0)
+                      fullPoster.push(leaderPosterIdx);
                     else fullPoster.push(pp[ppI++]);
                   }
-                  console.log(`[MAX COMBO NAMES] starActCount=${gpuResult.maxCount}:`);
+                  console.log(
+                    `[MAX COMBO NAMES] starActCount=${gpuResult.maxCount}:`,
+                  );
                   for (let i = 0; i < 5; i++) {
                     const ch = selChars[cp[i]];
                     const po = selPosters[fullPoster[i]];
                     const ac = selAccs[ap[i]];
-                    const charName = ch?.fullCardName || ch?.cardName || ch?.data?.Name || `char[${cp[i]}]`;
-                    const posterName = po?.fullPosterName || po?.data?.Name || `poster[${fullPoster[i]}]`;
-                    const accName = ac?.fullAccessoryName || ac?.data?.Name || `acc[${ap[i]}]`;
-                    const senseInfo = ch?.senseAll?.map(s => `${s.Type}(${s.data?.LightCount||0},CT${s.ct})`).join('/') || '';
+                    const charName =
+                      ch?.fullCardName ||
+                      ch?.cardName ||
+                      ch?.data?.Name ||
+                      `char[${cp[i]}]`;
+                    const posterName =
+                      po?.fullPosterName ||
+                      po?.data?.Name ||
+                      `poster[${fullPoster[i]}]`;
+                    const accName =
+                      ac?.fullAccessoryName ||
+                      ac?.data?.Name ||
+                      `acc[${ap[i]}]`;
+                    const senseInfo =
+                      ch?.senseAll
+                        ?.map(
+                          (s) =>
+                            `${s.Type}(${s.data?.LightCount || 0},CT${s.ct})`,
+                        )
+                        .join("/") || "";
                     // 输出海报/饰品灯光效果（现在是 entry 数组格式）
-                    const fieldNames = ['selfLightBonus','extraLightSupport','extraLightControl','extraLightAmplification','extraLightSpecial','extraLightVariable','decreaseReq0','decreaseReq1','decreaseReq2','decreaseReq3','recastDown'];
-                    const triggerNames = ['none','Company','Attribute','SenseType','CharacterBase'];
-                    const pEff = LiveSimulator.collectPosterLightEffects(po, teamContext);
+                    const fieldNames = [
+                      "selfLightBonus",
+                      "extraLightSupport",
+                      "extraLightControl",
+                      "extraLightAmplification",
+                      "extraLightSpecial",
+                      "extraLightVariable",
+                      "decreaseReq0",
+                      "decreaseReq1",
+                      "decreaseReq2",
+                      "decreaseReq3",
+                      "recastDown",
+                    ];
+                    const triggerNames = [
+                      "none",
+                      "Company",
+                      "Attribute",
+                      "SenseType",
+                      "CharacterBase",
+                    ];
+                    const pEff = LiveSimulator.collectPosterLightEffects(
+                      po,
+                      teamContext,
+                    );
                     const aEff = LiveSimulator.collectAccessoryLightEffects(ac);
-                    const pEffStr = pEff.map(e => `${fieldNames[e.field]||'f'+e.field}=${e.value}${e.triggerType>0?`(${triggerNames[e.triggerType]||'T'+e.triggerType}=${e.triggerValue})`:''}`).join(', ');
-                    const aEffStr = aEff.map(e => `${fieldNames[e.field]||'f'+e.field}=${e.value}${e.triggerType>0?`(${triggerNames[e.triggerType]||'T'+e.triggerType}=${e.triggerValue})`:''}`).join(', ');
-                    console.log(`  pos${i}: ${charName} / ${posterName} / ${accName}`);
+                    const pEffStr = pEff
+                      .map(
+                        (e) =>
+                          `${fieldNames[e.field] || "f" + e.field}=${e.value}${e.triggerType > 0 ? `(${triggerNames[e.triggerType] || "T" + e.triggerType}=${e.triggerValue})` : ""}`,
+                      )
+                      .join(", ");
+                    const aEffStr = aEff
+                      .map(
+                        (e) =>
+                          `${fieldNames[e.field] || "f" + e.field}=${e.value}${e.triggerType > 0 ? `(${triggerNames[e.triggerType] || "T" + e.triggerType}=${e.triggerValue})` : ""}`,
+                      )
+                      .join(", ");
+                    console.log(
+                      `  pos${i}: ${charName} / ${posterName} / ${accName}`,
+                    );
                     console.log(`    Senses: ${senseInfo}`);
                     if (pEffStr) console.log(`    PosterEff: ${pEffStr}`);
                     if (aEffStr) console.log(`    AccEff: ${aEffStr}`);
@@ -2541,7 +2775,7 @@ export default class RootLogic {
               }
 
               // 构建完整组合数据（映射回原始索引）
-              filteredCombinations = gpuResult.candidates.map(c => {
+              filteredCombinations = gpuResult.candidates.map((c) => {
                 const cp = charPerms[c.cpIdx];
                 const pp = validPosterPerms[c.ppIdx];
                 const ap = accPerms[c.apIdx];
@@ -2568,7 +2802,10 @@ export default class RootLogic {
           console.log("autoParty: WebGPU not available, falling back to CPU");
         }
       } catch (err) {
-        console.warn("autoParty: WebGPU pre-filter failed, falling back to CPU:", err);
+        console.warn(
+          "autoParty: WebGPU pre-filter failed, falling back to CPU:",
+          err,
+        );
       }
       filterDuration = performance.now() - filterStart;
     }
@@ -2579,7 +2816,10 @@ export default class RootLogic {
       totalCombinations = filteredCombinations.length;
     } else {
       const charPermCount = AutoPartyWorkerPool.permCount(selChars.length, 5);
-      const posterPermCount = AutoPartyWorkerPool.permCount(posterIndices.length, posterSlots);
+      const posterPermCount = AutoPartyWorkerPool.permCount(
+        posterIndices.length,
+        posterSlots,
+      );
       const accPermCount = AutoPartyWorkerPool.permCount(selAccs.length, 5);
       totalCombinations = charPermCount * posterPermCount * accPermCount;
     }
@@ -2589,7 +2829,10 @@ export default class RootLogic {
       onTotalReady(totalCombinations, !!filteredCombinations);
     }
 
-    console.log("autoParty precise:", { totalCombinations, webGPUFiltered: !!filteredCombinations });
+    console.log("autoParty precise:", {
+      totalCombinations,
+      webGPUFiltered: !!filteredCombinations,
+    });
 
     this._autoPartyWorkerPool = new AutoPartyWorkerPool();
 
@@ -2616,19 +2859,29 @@ export default class RootLogic {
       });
 
       if (result.bestIndices) {
-        const { charIndices, posterIndices: ppIndices, accIndices } = result.bestIndices;
-        const members = charIndices.map(i => selChars[i]);
+        const {
+          charIndices,
+          posterIndices: ppIndices,
+          accIndices,
+        } = result.bestIndices;
+        const members = charIndices.map((i) => selChars[i]);
 
         // posterIndices 已是完整 5 元素数组（包含队长海报）
-        const posters = ppIndices.map(i => selPosters[i]);
-        const accessories = accIndices.map(i => selAccs[i]);
+        const posters = ppIndices.map((i) => selPosters[i]);
+        const accessories = accIndices.map((i) => selAccs[i]);
 
         // GPU 模式：filterDuration 来自 GPU 筛选，scoringDuration 来自 worker pool
         // CPU 模式：filterDuration 和 scoringDuration 都来自 worker pool
-        const finalFilterDuration = filteredCombinations ? filterDuration : (result.filterDuration || 0);
+        const finalFilterDuration = filteredCombinations
+          ? filterDuration
+          : result.filterDuration || 0;
         const finalScoringDuration = result.scoringDuration || 0;
 
-        console.log("autoParty precise done:", { bestScore: result.bestScore, filterDuration: finalFilterDuration, scoringDuration: finalScoringDuration });
+        console.log("autoParty precise done:", {
+          bestScore: result.bestScore,
+          filterDuration: finalFilterDuration,
+          scoringDuration: finalScoringDuration,
+        });
         return {
           characters: members,
           posters,
