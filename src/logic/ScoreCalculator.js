@@ -742,18 +742,7 @@ export default class ScoreCalculator {
     // 清除上一次计算的临时效果，确保每次计算独立
     this.members.forEach((i) => i?.resetEffects());
 
-    // ===== 阶段 3：设置 StarAct 需求灯光数 =====
-    // 根据队长的 StarAct 数据，确定需要收集多少灯光才能发动
-    this.liveSim.setStarActRequirements(leader.staract.actualRequirements);
-    // 储存型 StarAct：设置储存上限和储存灯光类型
-    if (leader.staract.data.BranchCondition1 === "StorageSenseLightCount") {
-      this.liveSim.maxStockCount =
-        leader.staract.data.Branches.find((i) => i.JudgeType1 === "MoreThan")
-          ?.Parameter1 ?? 0;
-      this.liveSim.stockType = leader.staract.data.ConditionValue1;
-    }
-
-    // ===== 阶段 4：应用每个角色的被动效果 =====
+    // ===== 阶段 3：应用每个角色的被动效果 =====
     this.members.forEach((chara, idx) => {
       if (!chara) return;
       // 标记跳过 Sense 的角色（角色ID 401 = 特殊机制角色）
@@ -814,6 +803,17 @@ export default class ScoreCalculator {
         }
       }
     });
+
+    // ===== 阶段 4：设置 StarAct 需求灯光数 =====
+    // 必须在开花效果之后调用，因为开花效果可能减少所需灯光数（requireDecrease）
+    this.liveSim.setStarActRequirements(leader.staract.actualRequirements);
+    // 储存型 StarAct：设置储存上限和储存灯光类型
+    if (leader.staract.data.BranchCondition1 === "StorageSenseLightCount") {
+      this.liveSim.maxStockCount =
+        leader.staract.data.Branches.find((i) => i.JudgeType1 === "MoreThan")
+          ?.Parameter1 ?? 0;
+      this.liveSim.stockType = leader.staract.data.ConditionValue1;
+    }
 
     // ===== 阶段 5：设置默认面板数值 =====
     // 不执行完整的 stat.calc()，只给 stat.final 设置默认值（全 0）
