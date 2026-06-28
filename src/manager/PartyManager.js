@@ -502,7 +502,7 @@ export default class PartyManager {
         (data.chars || []).forEach((id) => savedChars.add(id));
         (data.posters || []).forEach((id) => savedPosters.add(id));
         (data.accs || []).forEach((item) => {
-          const sep = item.indexOf('_');
+          const sep = item.indexOf("_");
           if (sep > 0) {
             const idx = parseInt(item.substring(0, sep));
             const id = parseInt(item.substring(sep + 1));
@@ -522,33 +522,48 @@ export default class PartyManager {
 
     const saveState = () => {
       const data = {
-        chars: characters.filter((_, i) => selectedChars[i]).map((c) => c.data.Id),
-        posters: posters.filter((_, i) => selectedPosters[i]).map((p) => p.data.Id),
-        accs: accessories.map((a, i) => selectedAccs[i] ? `${i}_${a.data.Id}` : null).filter(Boolean),
+        chars: characters
+          .filter((_, i) => selectedChars[i])
+          .map((c) => c.data.Id),
+        posters: posters
+          .filter((_, i) => selectedPosters[i])
+          .map((p) => p.data.Id),
+        accs: accessories
+          .map((a, i) => (selectedAccs[i] ? `${i}_${a.data.Id}` : null))
+          .filter(Boolean),
         leaderId: characters[leaderIdx]?.data.Id ?? null,
-        leaderPosterId: leaderPosterIdx >= 0 ? posters[leaderPosterIdx]?.data.Id ?? null : null,
+        leaderPosterId:
+          leaderPosterIdx >= 0
+            ? (posters[leaderPosterIdx]?.data.Id ?? null)
+            : null,
       };
-      try { localStorage.setItem("autoPartyState", JSON.stringify(data)); } catch (_) {}
+      try {
+        localStorage.setItem("autoPartyState", JSON.stringify(data));
+      } catch (_) {}
     };
 
-    const closeBtn = _("span", {
-      style: {
-        position: "absolute",
-        top: "18px",
-        right: "15px",
-        cursor: "pointer",
-        fontSize: "28px",
-        fontWeight: "bold",
-        color: "#666",
-        lineHeight: "1",
-      },
-      event: {
-        click: () => {
-          if (root.stopAutoPartySearch) root.stopAutoPartySearch();
-          overlay.remove();
+    const closeBtn = _(
+      "span",
+      {
+        style: {
+          position: "absolute",
+          top: "18px",
+          right: "15px",
+          cursor: "pointer",
+          fontSize: "28px",
+          fontWeight: "bold",
+          color: "#666",
+          lineHeight: "1",
+        },
+        event: {
+          click: () => {
+            if (root.stopAutoPartySearch) root.stopAutoPartySearch();
+            overlay.remove();
+          },
         },
       },
-    }, [_("text", "×")]);
+      [_("text", "×")],
+    );
 
     const title = _("h3", { style: { marginTop: 0, paddingRight: "30px" } }, [
       _("text", "自动配队 - 选择候选项"),
@@ -668,11 +683,64 @@ export default class PartyManager {
       ]),
     );
     workerSection.appendChild(
-      _("div", {
-        style: { marginTop: "4px", fontSize: "12px", color: "#666" },
-      }, [
-        _("text", "建议使用全部核心数。减少数量可降低系统负载。"),
+      _(
+        "div",
+        {
+          style: { marginTop: "4px", fontSize: "12px", color: "#666" },
+        },
+        [_("text", "建议使用全部核心数。减少数量可降低系统负载。")],
+      ),
+    );
+
+    // SA 筛选阈值设置
+    const saThresholdSection = _("div", {
+      style: {
+        marginBottom: "15px",
+        padding: "10px",
+        background: "#fff3e0",
+        borderRadius: "4px",
+      },
+    });
+    saThresholdSection.appendChild(
+      _("div", { style: { fontWeight: "bold", marginBottom: "8px" } }, [
+        _("text", "StarAct 筛选设置"),
       ]),
+    );
+    const savedThreshold = (() => {
+      try {
+        return parseInt(localStorage.getItem("autoPartySAThreshold")) || 1;
+      } catch {
+        return 1;
+      }
+    })();
+    const saThresholdInput = _("input", {
+      type: "number",
+      value: savedThreshold,
+      min: 0,
+      max: 10,
+      step: 1,
+      style: { width: "80px" },
+    });
+    saThresholdSection.appendChild(
+      _("div", {}, [
+        _("text", "SA 阈值偏移: "),
+        saThresholdInput,
+        _("text", " （第一轮筛选阈值 = 最大SA数 - 此值）"),
+      ]),
+    );
+    saThresholdSection.appendChild(
+      _(
+        "div",
+        {
+          style: { marginTop: "4px", fontSize: "12px", color: "#666" },
+        },
+        [
+          _(
+            "text",
+            "设为 0 只保留最高 SA 组合。设为 1 保留最高和次高（默认）。增大可保留更多候选，但会增加第二轮计算量。",
+          ),
+        ],
+      ),
     );
 
     // WebGPU 加速选项
@@ -693,9 +761,11 @@ export default class PartyManager {
       type: "checkbox",
       disabled: true,
     });
-    const gpuStatus = _("span", { style: { marginLeft: "8px", fontSize: "12px", color: "#999" } }, [
-      _("text", "检测中..."),
-    ]);
+    const gpuStatus = _(
+      "span",
+      { style: { marginLeft: "8px", fontSize: "12px", color: "#999" } },
+      [_("text", "检测中...")],
+    );
     gpuSection.appendChild(
       _("label", {}, [
         gpuCheckbox,
@@ -704,11 +774,18 @@ export default class PartyManager {
       ]),
     );
     gpuSection.appendChild(
-      _("div", {
-        style: { marginTop: "4px", fontSize: "12px", color: "#666" },
-      }, [
-        _("text", "WebGPU 会在 CPU 计算前先用 GPU 快速评估角色排列的 StarAct 触发次数，减少需要遍历的组合数。"),
-      ]),
+      _(
+        "div",
+        {
+          style: { marginTop: "4px", fontSize: "12px", color: "#666" },
+        },
+        [
+          _(
+            "text",
+            "WebGPU 会在 CPU 计算前先用 GPU 快速评估角色排列的 StarAct 触发次数，减少需要遍历的组合数。",
+          ),
+        ],
+      ),
     );
 
     // 异步检测 WebGPU 支持
@@ -755,10 +832,7 @@ export default class PartyManager {
     const perm = (n, k) =>
       n < k
         ? 0
-        : Array.from({ length: k }, (_, i) => n - i).reduce(
-          (a, b) => a * b,
-          1,
-        );
+        : Array.from({ length: k }, (_, i) => n - i).reduce((a, b) => a * b, 1);
 
     const updateEstimate = () => {
       const charCount = selectedChars.filter(Boolean).length;
@@ -964,7 +1038,9 @@ export default class PartyManager {
       },
     });
     accessories.forEach((a, idx) => {
-      const isChecked = (savedAccs.has(idx) && savedAccs.get(idx) === a.data.Id) || savedAccs.size === 0;
+      const isChecked =
+        (savedAccs.has(idx) && savedAccs.get(idx) === a.data.Id) ||
+        savedAccs.size === 0;
       selectedAccs[idx] = isChecked;
       const cb = _("input", {
         type: "checkbox",
@@ -1114,11 +1190,26 @@ export default class PartyManager {
           const leaderPoster =
             leaderPosterIdx === -1 ? null : posters[leaderPosterIdx];
 
-          console.log(JSON.stringify({
-            characters: selChars.map(c => ({ id: c.Id, name: c.fullCardName })),
-            posters: selPosters.map(p => ({ id: p.id, name: p.fullPosterName })),
-            accessories: selAccs.map(a => ({ id: a.id, name: a.fullAccessoryName })),
-          }, null, 2));
+          console.log(
+            JSON.stringify(
+              {
+                characters: selChars.map((c) => ({
+                  id: c.Id,
+                  name: c.fullCardName,
+                })),
+                posters: selPosters.map((p) => ({
+                  id: p.id,
+                  name: p.fullPosterName,
+                })),
+                accessories: selAccs.map((a) => ({
+                  id: a.id,
+                  name: a.fullAccessoryName,
+                })),
+              },
+              null,
+              2,
+            ),
+          );
 
           try {
             let result;
@@ -1127,7 +1218,8 @@ export default class PartyManager {
               // ===== Python 脚本配队流程 =====
               if (typeof window.electronAPI === "undefined") {
                 resultSection.style.display = "";
-                resultSection.innerHTML = '<div style="color:red">Python 脚本配队仅在 Electron 环境下可用</div>';
+                resultSection.innerHTML =
+                  '<div style="color:red">Python 脚本配队仅在 Electron 环境下可用</div>';
                 startBtn.disabled = false;
                 return;
               }
@@ -1135,9 +1227,13 @@ export default class PartyManager {
               progressFill.style.width = "0%";
 
               const userData = {
-                characters: selChars.map(c => [c.Id, c.lvl, c.awaken ? 1 : 0]),
-                posters: selPosters.map(p => [p.id, p.level, p.release || 0]),
-                accessories: selAccs.map(a => [a.id, a.level]),
+                characters: selChars.map((c) => [
+                  c.Id,
+                  c.lvl,
+                  c.awaken ? 1 : 0,
+                ]),
+                posters: selPosters.map((p) => [p.id, p.level, p.release || 0]),
+                accessories: selAccs.map((a) => [a.id, a.level]),
                 characters_data: Object.values(GameDb.Character),
                 posters_ability_data: Object.values(GameDb.PosterAbility),
                 effects_data: Object.values(GameDb.Effect),
@@ -1152,6 +1248,7 @@ export default class PartyManager {
               let resolveQueue = null;
               let currentBatch = 0;
               const workerCount = parseInt(workerInput.value) || maxCores;
+              const saThreshold = parseInt(saThresholdInput.value) || 1;
 
               result = await root.handleAutoPartyPythonStream({
                 selChars,
@@ -1160,15 +1257,23 @@ export default class PartyManager {
                 leader,
                 leaderPoster,
                 workerCount,
+                saThreshold,
                 batchReader: async (processBatch) => {
                   let finReceived = false;
                   const sendFIN = () => {
                     if (finReceived) return;
                     finReceived = true;
-                    console.log(`[PartyManager] sendFIN: totalReceived=${pyTotalReceived}, pyAccum=${pyAccum.length}`);
-                    if (pyAccum.length > 0) { batchQueue.push(pyAccum.splice(0)); }
+                    console.log(
+                      `[PartyManager] sendFIN: totalReceived=${pyTotalReceived}, pyAccum=${pyAccum.length}`,
+                    );
+                    if (pyAccum.length > 0) {
+                      batchQueue.push(pyAccum.splice(0));
+                    }
                     batchQueue.push(null);
-                    if (resolveQueue) { resolveQueue(); resolveQueue = null; }
+                    if (resolveQueue) {
+                      resolveQueue();
+                      resolveQueue = null;
+                    }
                   };
 
                   window.electronAPI.onFormationResult((msg) => {
@@ -1180,7 +1285,10 @@ export default class PartyManager {
                       pyTotalReceived++;
                       if (pyAccum.length >= PY_BATCH_SIZE) {
                         batchQueue.push(pyAccum.splice(0));
-                        if (resolveQueue) { resolveQueue(); resolveQueue = null; }
+                        if (resolveQueue) {
+                          resolveQueue();
+                          resolveQueue = null;
+                        }
                       }
                     }
                     if (pyTotalReceived % 5000 === 0) {
@@ -1190,33 +1298,56 @@ export default class PartyManager {
 
                   // runFormation 的 Promise 在进程关闭时 resolve，作为 FIN 兜底
                   window.electronAPI.runFormation(userData).then(() => {
-                    console.log(`[PartyManager] Python process closed, finReceived=${finReceived}`);
+                    console.log(
+                      `[PartyManager] Python process closed, finReceived=${finReceived}`,
+                    );
                     sendFIN();
                   });
 
                   while (true) {
                     while (batchQueue.length === 0) {
-                      await new Promise(r => { resolveQueue = r; });
+                      await new Promise((r) => {
+                        resolveQueue = r;
+                      });
                     }
                     const batch = batchQueue.shift();
                     if (batch === null) break;
                     currentBatch++;
-                    console.log(`[PartyManager] 批次 ${currentBatch}: 候选数=${batch.length}`);
+                    console.log(
+                      `[PartyManager] 批次 ${currentBatch}: 候选数=${batch.length}`,
+                    );
                     await processBatch(batch);
                   }
-                  console.log(`[PartyManager] Python 流式处理完成: 总候选数=${pyTotalReceived}, 总批次=${currentBatch}`);
+                  console.log(
+                    `[PartyManager] Python 流式处理完成: 总候选数=${pyTotalReceived}, 总批次=${currentBatch}`,
+                  );
                   window.electronAPI.removeFormationResultListener();
                 },
                 onProgress: (progress) => {
-                  const { phase, phase1Current, phase1Total, phase2Current, phase2Total, bestScore } = progress;
-                  if (bestScore > 0 && bestScore > (overallBest || 0)) overallBest = bestScore;
-                  if (phase === 'scoring' && phase2Total > 0) {
-                    const pct = ((phase2Current / phase2Total) * 100).toFixed(1);
+                  const {
+                    phase,
+                    phase1Current,
+                    phase1Total,
+                    phase2Current,
+                    phase2Total,
+                    bestScore,
+                  } = progress;
+                  if (bestScore > 0 && bestScore > (overallBest || 0))
+                    overallBest = bestScore;
+                  if (phase === "scoring" && phase2Total > 0) {
+                    const pct = ((phase2Current / phase2Total) * 100).toFixed(
+                      1,
+                    );
                     progressFill.style.width = pct + "%";
-                    const estTotal = Math.max(currentBatch, Math.ceil(pyTotalReceived / PY_BATCH_SIZE));
+                    const estTotal = Math.max(
+                      currentBatch,
+                      Math.ceil(pyTotalReceived / PY_BATCH_SIZE),
+                    );
                     progressText.textContent = `评分中: ${phase2Current.toLocaleString()} / ${phase2Total.toLocaleString()} 候选 (${pct}%) - 批次 ${currentBatch}/${estTotal} - 最高分: ${overallBest}`;
                   } else if (phase1Total > 0) {
-                    const pct = ((phase1Current / phase1Total) * 100).toFixed(1);
+                    const pct = ((phase1Current / phase1Total) * 100).toFixed(
+                      1,
+                    );
                     progressFill.style.width = pct + "%";
                     progressText.textContent = `筛选中: ${phase1Current.toLocaleString()} / ${phase1Total.toLocaleString()} 组合 (${pct}%)`;
                   }
@@ -1226,34 +1357,58 @@ export default class PartyManager {
               // ===== 原有 Worker 配队流程 =====
               const useWebGPU = gpuCheckbox.checked && !gpuCheckbox.disabled;
               const workerCount = parseInt(workerInput.value) || maxCores;
+              const saThreshold = parseInt(saThresholdInput.value) || 1;
+              try {
+                localStorage.setItem("autoPartySAThreshold", saThreshold);
+              } catch {}
               result = await root.handleAutoParty({
                 selChars,
                 selPosters,
                 selAccs,
                 leader,
                 leaderPoster,
-                searchMode: 'precise',
+                searchMode: "precise",
                 useWebGPU,
                 workerCount,
+                saThreshold,
                 onTotalReady: (actualTotal, isGpuFiltered) => {
                   if (isGpuFiltered) {
                     estText.textContent = `实际遍历次数: ${actualTotal.toLocaleString()}（WebGPU 筛选后）`;
                   }
                 },
                 onProgress: (progress) => {
-                  const { phase, phase1Current, phase1Total, phase2Current, phase2Total, bestScore } = progress;
-                  if (phase === 'counting') {
-                    const pct = phase1Total > 0 ? ((phase1Current / phase1Total) * 100).toFixed(1) : '0.0';
+                  const {
+                    phase,
+                    phase1Current,
+                    phase1Total,
+                    phase2Current,
+                    phase2Total,
+                    bestScore,
+                  } = progress;
+                  if (phase === "counting") {
+                    const pct =
+                      phase1Total > 0
+                        ? ((phase1Current / phase1Total) * 100).toFixed(1)
+                        : "0.0";
                     progressFill.style.width = pct + "%";
                     progressText.textContent = `筛选中: ${phase1Current.toLocaleString()} / ${phase1Total.toLocaleString()} 组合 (${pct}%)`;
                   } else {
                     if (phase1Total > 0) {
+                      // 显示两阶段筛选结果
                       estText.textContent = `筛选完成: ${phase1Total.toLocaleString()} 个组合 → ${phase2Total.toLocaleString()} 个候选`;
                     }
-                    const pct = phase2Total > 0 ? ((phase2Current / phase2Total) * 100).toFixed(1) : '0.0';
-                    const overallPct = phase1Total + phase2Total > 0
-                      ? ((phase1Current + phase2Current) / (phase1Total + phase2Total) * 100).toFixed(1)
-                      : '0.0';
+                    const pct =
+                      phase2Total > 0
+                        ? ((phase2Current / phase2Total) * 100).toFixed(1)
+                        : "0.0";
+                    const overallPct =
+                      phase1Total + phase2Total > 0
+                        ? (
+                          ((phase1Current + phase2Current) /
+                              (phase1Total + phase2Total)) *
+                            100
+                        ).toFixed(1)
+                        : "0.0";
                     progressFill.style.width = overallPct + "%";
                     progressText.textContent = `评分中: ${phase2Current.toLocaleString()} / ${phase2Total.toLocaleString()} 候选 (${pct}%) - 当前最高分: ${bestScore}`;
                   }
@@ -1289,13 +1444,25 @@ export default class PartyManager {
                 return `${Math.floor(ms / 60000)}m${((ms % 60000) / 1000).toFixed(0)}s`;
               };
               const timeInfo = [];
-              if (result.filterDuration > 0) timeInfo.push(`筛选: ${formatDuration(result.filterDuration)}`);
-              if (result.scoringDuration > 0) timeInfo.push(`评分: ${formatDuration(result.scoringDuration)}`);
+              if (result.filterDuration > 0)
+                timeInfo.push(`筛选: ${formatDuration(result.filterDuration)}`);
+              if (result.scoringDuration > 0)
+                timeInfo.push(
+                  `评分: ${formatDuration(result.scoringDuration)}`,
+                );
               if (timeInfo.length > 0) {
                 resultSection.appendChild(
-                  _("div", { style: { fontSize: "12px", color: "#888", marginTop: "4px" } }, [
-                    _("text", timeInfo.join(' | ')),
-                  ]),
+                  _(
+                    "div",
+                    {
+                      style: {
+                        fontSize: "12px",
+                        color: "#888",
+                        marginTop: "4px",
+                      },
+                    },
+                    [_("text", timeInfo.join(" | "))],
+                  ),
                 );
               }
               const btnApply = _("input", {
@@ -1333,6 +1500,7 @@ export default class PartyManager {
     dialog.appendChild(accSection);
     dialog.appendChild(estInfo);
     dialog.appendChild(workerSection);
+    dialog.appendChild(saThresholdSection);
     dialog.appendChild(gpuSection);
     dialog.appendChild(pythonSection);
     dialog.appendChild(progressSection);

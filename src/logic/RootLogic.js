@@ -2435,6 +2435,7 @@ export default class RootLogic {
     leaderPoster,
     useWebGPU = false,
     workerCount,
+    saThreshold = 1,
     onProgress,
     onTotalReady,
   }) {
@@ -2854,6 +2855,7 @@ export default class RootLogic {
         gameDbData,
         totalCombinations,
         workerCount,
+        saThreshold,
         onProgress,
         filteredCombinations,
       });
@@ -2911,6 +2913,7 @@ export default class RootLogic {
     batchReader,
     onProgress,
     workerCount,
+    saThreshold = 1,
   }) {
     const leaderIdx = selChars.indexOf(leader);
     const leaderPosterIdx = leaderPoster ? selPosters.indexOf(leaderPoster) : -1;
