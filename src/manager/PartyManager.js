@@ -845,6 +845,19 @@ export default class PartyManager {
       const accComb = perm(accCount, 5);
       const total = charComb * posterComb * accComb;
       estText.textContent = `预估遍历次数: ${total.toLocaleString()} (角色${charComb} × 海报${posterComb} × 饰品${accComb})`;
+      updateStartBtnState();
+    };
+
+    const updateStartBtnState = () => {
+      const charCount = selectedChars.filter(Boolean).length;
+      const posterCount = selectedPosters.filter(Boolean).length;
+      const accCount = selectedAccs.filter(Boolean).length;
+      const missing = [];
+      if (charCount < 5) missing.push(`角色(${charCount}/5)`);
+      if (posterCount < 5) missing.push(`海报(${posterCount}/5)`);
+      if (accCount < 5) missing.push(`饰品(${accCount}/5)`);
+      startBtn.disabled = missing.length > 0;
+      startBtn.title = missing.length > 0 ? `还需选择: ${missing.join("、")}` : "";
     };
 
     const charSection = _("div", { style: { marginBottom: "15px" } });
@@ -1167,6 +1180,7 @@ export default class PartyManager {
     const startBtn = _("input", {
       type: "button",
       value: "开始计算",
+      disabled: true,
       event: {
         click: async () => {
           startBtn.disabled = true;
