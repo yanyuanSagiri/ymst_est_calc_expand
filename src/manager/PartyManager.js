@@ -1249,6 +1249,9 @@ export default class PartyManager {
               let currentBatch = 0;
               const workerCount = parseInt(workerInput.value) || maxCores;
               const saThreshold = parseInt(saThresholdInput.value) || 1;
+              try {
+                localStorage.setItem("autoPartySAThreshold", saThreshold);
+              } catch {}
 
               result = await root.handleAutoPartyPythonStream({
                 selChars,

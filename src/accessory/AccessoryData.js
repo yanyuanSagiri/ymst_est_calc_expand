@@ -90,21 +90,20 @@ export default class AccessoryData {
     }
   }
   appendNode(parent) {
-    root.accessoryIconList.appendChild(this.iconNode)
-    parent.appendChild(this.node)
+    if (this.iconNode) root.accessoryIconList.appendChild(this.iconNode)
+    if (this.node) parent.appendChild(this.node)
   }
   remove() {
-    this.node.remove()
-    this.iconNode.remove()
+    this.node?.remove()
+    this.iconNode?.remove()
     root.removeAccessory(this)
   }
   toggleSelection() {
+    if (!this.iconSelectionInput) return
     this.iconSelectionInput.checked = !this.iconSelectionInput.checked
-    this.iconNode.classList[this.iconSelectionInput.checked ? 'add' : 'remove']('selected')
-    if (this.iconSelectionInput.checked) {
-      this.node.style.display = ''
-    } else {
-      this.node.style.display = 'none'
+    this.iconNode?.classList[this.iconSelectionInput.checked ? 'add' : 'remove']('selected')
+    if (this.node) {
+      this.node.style.display = this.iconSelectionInput.checked ? '' : 'none'
     }
 
     root.update({ selection: true })

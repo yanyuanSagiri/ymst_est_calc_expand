@@ -1,6 +1,7 @@
 import GameDb from "../db/GameDb";
 import AtlasDb from "../db/AtlasDb";
 import ConstText from "../db/ConstText";
+import AccessoryEffectData from "../accessory/AccessoryEffectData";
 
 import _ from "../createElement";
 import removeAllChilds from "../removeAllChilds";
@@ -2981,7 +2982,19 @@ export default class RootLogic {
               const acc = new AccessoryData(id, null);
               acc.level = 10;
               acc.mainEffects.forEach(i => { i.level = 10; i.effect.level = 10; });
-              // parent=null 时不会创建 iconNode，需要手动补建
+              // parent=null 时缺少的初始化：randomEffect、iconNode、UI 元素
+              acc.effectBox = null;
+              acc.levelSelect = null;
+              acc.randomEffectSelect = null;
+              if (acc.data.RandomEffectGroups.length > 0) {
+                const group = GameDb.RandomEffectGroup[acc.data.RandomEffectGroups[0]];
+                if (group && group.AccessoryEffects.length > 0) {
+                  acc.randomEffectId = String(group.AccessoryEffects[0]);
+                  acc.randomEffect = new AccessoryEffectData(acc.randomEffectId, null);
+                  acc.randomEffect.level = 10;
+                  acc.randomEffect.effect.level = 10;
+                }
+              }
               if (!acc.iconNode) {
                 acc.iconNode = root.accessoryIconList.appendChild(_('span', { className: 'list-icon-container small-text', event: { click: e => acc.toggleSelection() } }, [
                   acc.iconNodeIcon = _('span', { className: 'spriteatlas-accessories', 'data-id': acc.id }),
@@ -3030,6 +3043,18 @@ export default class RootLogic {
               const acc = new AccessoryData(id, null);
               acc.level = 10;
               acc.mainEffects.forEach(i => { i.level = 10; i.effect.level = 10; });
+              acc.effectBox = null;
+              acc.levelSelect = null;
+              acc.randomEffectSelect = null;
+              if (acc.data.RandomEffectGroups.length > 0) {
+                const group = GameDb.RandomEffectGroup[acc.data.RandomEffectGroups[0]];
+                if (group && group.AccessoryEffects.length > 0) {
+                  acc.randomEffectId = String(group.AccessoryEffects[0]);
+                  acc.randomEffect = new AccessoryEffectData(acc.randomEffectId, null);
+                  acc.randomEffect.level = 10;
+                  acc.randomEffect.effect.level = 10;
+                }
+              }
               if (!acc.iconNode) {
                 acc.iconNode = root.accessoryIconList.appendChild(_('span', { className: 'list-icon-container small-text', event: { click: e => acc.toggleSelection() } }, [
                   acc.iconNodeIcon = _('span', { className: 'spriteatlas-accessories', 'data-id': acc.id }),
@@ -3100,6 +3125,7 @@ export default class RootLogic {
           highScoreEffectData, theaterLevelData,
           notationId: this.senseNoteSelect ? this.senseNoteSelect.value | 0 : 0,
           gameDbData, totalCombinations: comboCount, workerCount,
+          saThreshold,
           comboData: flatData, onProgress: onProgress || (() => {}),
         });
 
