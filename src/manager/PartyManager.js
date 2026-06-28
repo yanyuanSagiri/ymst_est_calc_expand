@@ -1,5 +1,6 @@
 import Party from "./Party";
 import ConstText from "../db/ConstText";
+import GameDb from "../db/GameDb";
 
 import _ from "../createElement";
 import removeAllChilds from "../removeAllChilds";
@@ -1137,6 +1138,9 @@ export default class PartyManager {
                 characters: selChars.map(c => [c.Id, c.lvl, c.awaken ? 1 : 0]),
                 posters: selPosters.map(p => [p.id, p.level, p.release || 0]),
                 accessories: selAccs.map(a => [a.id, a.level]),
+                characters_data: Object.values(GameDb.Character),
+                posters_ability_data: Object.values(GameDb.PosterAbility),
+                effects_data: Object.values(GameDb.Effect),
               };
 
               // 流式接收 + 分批处理

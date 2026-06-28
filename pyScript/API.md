@@ -255,6 +255,8 @@ document.getElementById('start').addEventListener('click', async () => {
 
 ### Python 调用
 
+#### 方式一：通过 exe 子进程调用
+
 ```python
 import subprocess
 import json
@@ -268,7 +270,7 @@ def run_formation(user_data, options=None):
             args.extend(['-mc'] + [str(x) for x in options['mandatory_characters']])
         if options.get('mandatory_posters'):
             args.extend(['-mp'] + [str(x) for x in options['mandatory_posters']])
-    
+
     process = subprocess.Popen(
         args,
         stdin=subprocess.PIPE,
@@ -276,7 +278,7 @@ def run_formation(user_data, options=None):
         stderr=subprocess.PIPE,
         text=True
     )
-    
+
     stdout, stderr = process.communicate(json.dumps(user_data) + '\n')
     results = []
     for line in stdout.strip().split('\n'):
@@ -294,6 +296,53 @@ user_data = {
 }
 results = run_formation(user_data)
 ```
+
+#### 方式二：直接导入模块调用（支持动态传入游戏数据）
+
+```python
+import asyncio
+import json
+from StartForServer import main
+
+# 不传参 → 从本地 data/ 目录读取游戏数据
+asyncio.run(main())
+
+# 传入动态数据 → 跳过本地文件读取
+characters_data = [
+    {"Id": 110010, "CharacterBaseMasterId": 101, "Name": "愛城華恋", "Rarity": "Rare1", "Attribute": "Colorful", ...},
+    ...
+]
+posters_ability_data = [
+    {"PosterMasterId": 230010, "AbilityType": "VocalUp", "Value": 5, ...},
+    ...
+]
+effects_data = [
+    {"Id": 70052001, "Type": "PerformanceUp", "Value": 10, ...},
+    ...
+]
+accessory_data = [
+    {"CharacterBaseMasterId": 101, "AccessoryId": [430220, 330010, 430210]},
+    ...
+]
+
+asyncio.run(main(
+    characters_data=characters_data,
+    posters_ability_data=posters_ability_data,
+    effects_data=effects_data,
+    accessory_data=accessory_data
+))
+```
+
+**动态入参说明：**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `characters_data` | `list[dict]` | CharacterMaster.json 的解析数据 |
+| `posters_ability_data` | `list[dict]` | PosterAbilityMaster.json 的解析数据 |
+| `effects_data` | `list[dict]` | EffectMaster.json 的解析数据 |
+| `accessory_data` | `list[dict]` | accessory_processed.json 的解析数据 |
+
+所有参数均为可选，不传时从本地 `data/` 目录读取文件。
 
 ## 输入格式
 
