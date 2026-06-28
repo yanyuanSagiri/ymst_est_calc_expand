@@ -674,6 +674,46 @@ export default class PartyManager {
       ]),
     );
 
+    // SA 筛选阈值设置
+    const saThresholdSection = _("div", {
+      style: {
+        marginBottom: "15px",
+        padding: "10px",
+        background: "#fff3e0",
+        borderRadius: "4px",
+      },
+    });
+    saThresholdSection.appendChild(
+      _("div", { style: { fontWeight: "bold", marginBottom: "8px" } }, [
+        _("text", "StarAct 筛选设置"),
+      ]),
+    );
+    const savedThreshold = (() => {
+      try { return parseInt(localStorage.getItem("autoPartySAThreshold")) || 1; } catch { return 1; }
+    })();
+    const saThresholdInput = _("input", {
+      type: "number",
+      value: savedThreshold,
+      min: 0,
+      max: 10,
+      step: 1,
+      style: { width: "80px" },
+    });
+    saThresholdSection.appendChild(
+      _("div", {}, [
+        _("text", "SA 阈值偏移: "),
+        saThresholdInput,
+        _("text", " （第一轮筛选阈值 = 最大SA数 - 此值）"),
+      ]),
+    );
+    saThresholdSection.appendChild(
+      _("div", {
+        style: { marginTop: "4px", fontSize: "12px", color: "#666" },
+      }, [
+        _("text", "设为 0 只保留最高 SA 组合。设为 1 保留最高和次高（默认）。增大可保留更多候选，但会增加第二轮计算量。"),
+      ]),
+    );
+
     // WebGPU 加速选项
     const gpuSection = _("div", {
       style: {
@@ -1095,6 +1135,8 @@ export default class PartyManager {
           try {
             const useWebGPU = gpuCheckbox.checked && !gpuCheckbox.disabled;
             const workerCount = parseInt(workerInput.value) || maxCores;
+            const saThreshold = parseInt(saThresholdInput.value) || 1;
+            try { localStorage.setItem("autoPartySAThreshold", saThreshold); } catch {}
             const result = await root.handleAutoParty({
               selChars,
               selPosters,
@@ -1104,6 +1146,7 @@ export default class PartyManager {
               searchMode: 'precise',
               useWebGPU,
               workerCount,
+              saThreshold,
               onTotalReady: (actualTotal, isGpuFiltered) => {
                 if (isGpuFiltered) {
                   estText.textContent = `实际遍历次数: ${actualTotal.toLocaleString()}（WebGPU 筛选后）`;
@@ -1203,6 +1246,7 @@ export default class PartyManager {
     dialog.appendChild(accSection);
     dialog.appendChild(estInfo);
     dialog.appendChild(workerSection);
+    dialog.appendChild(saThresholdSection);
     dialog.appendChild(gpuSection);
     dialog.appendChild(progressSection);
     dialog.appendChild(resultSection);

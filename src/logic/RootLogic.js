@@ -2435,6 +2435,7 @@ export default class RootLogic {
     leaderPoster,
     useWebGPU = false,
     workerCount,
+    saThreshold = 1,
     onProgress,
     onTotalReady,
   }) {
@@ -2854,6 +2855,7 @@ export default class RootLogic {
         gameDbData,
         totalCombinations,
         workerCount,
+        saThreshold,
         onProgress,
         filteredCombinations,
       });

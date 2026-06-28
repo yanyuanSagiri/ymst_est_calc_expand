@@ -6,7 +6,7 @@ export default class AutoPartyWorkerPool {
   }
 
   async runSearch(params) {
-    const { onProgress } = params;
+    const { onProgress, saThreshold = 1 } = params;
     const maxCores = navigator.hardwareConcurrency || 4;
     const workerCount = Math.max(1, Math.min(params.workerCount || maxCores, maxCores));
 
@@ -116,8 +116,8 @@ export default class AutoPartyWorkerPool {
               if (phase1DoneCount === workerCount && !thresholdBroadcast) {
                 thresholdBroadcast = true;
                 const globalMaxSA = Math.max(...workerMaxSAs);
-                const globalThreshold = Math.max(0, globalMaxSA - 1);
-                console.log(`autoParty: CPU threshold=${globalThreshold}`);
+                const globalThreshold = Math.max(0, globalMaxSA - saThreshold);
+                console.log(`autoParty: CPU threshold=${globalThreshold} (maxSA=${globalMaxSA}, offset=${saThreshold})`);
                 for (const w of this.workers) {
                   w.postMessage({ type: 'GLOBAL_THRESHOLD', data: { threshold: globalThreshold } });
                 }
