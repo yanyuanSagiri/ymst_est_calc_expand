@@ -1157,12 +1157,20 @@ export default class PartyManager {
                 leaderPoster,
                 workerCount,
                 batchReader: async (processBatch) => {
+                  let finReceived = false;
+                  const sendFIN = () => {
+                    if (finReceived) return;
+                    finReceived = true;
+                    console.log(`[PartyManager] sendFIN: totalReceived=${pyTotalReceived}, pyAccum=${pyAccum.length}`);
+                    if (pyAccum.length > 0) { batchQueue.push(pyAccum.splice(0)); }
+                    batchQueue.push(null);
+                    if (resolveQueue) { resolveQueue(); resolveQueue = null; }
+                  };
+
                   window.electronAPI.onFormationResult((msg) => {
                     if (msg.FIN) {
-                      console.log(`[PartyManager] FIN received, totalReceived=${pyTotalReceived}, pyAccum=${pyAccum.length}`);
-                      if (pyAccum.length > 0) { batchQueue.push(pyAccum.splice(0)); }
-                      batchQueue.push(null);
-                      if (resolveQueue) { resolveQueue(); resolveQueue = null; }
+                      console.log(`[PartyManager] FIN via IPC`);
+                      sendFIN();
                     } else if (!msg.error) {
                       pyAccum.push(msg);
                       pyTotalReceived++;
@@ -1176,7 +1184,11 @@ export default class PartyManager {
                     }
                   });
 
-                  window.electronAPI.runFormation(userData);
+                  // runFormation 的 Promise 在进程关闭时 resolve，作为 FIN 兜底
+                  window.electronAPI.runFormation(userData).then(() => {
+                    console.log(`[PartyManager] Python process closed, finReceived=${finReceived}`);
+                    sendFIN();
+                  });
 
                   while (true) {
                     while (batchQueue.length === 0) {

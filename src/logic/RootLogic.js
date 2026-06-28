@@ -2950,13 +2950,19 @@ export default class RootLogic {
       batchCount++;
       const filteredCombinations = [];
 
-      const targetFirst10 = [150030, 142420, 150020, 150040, 150010, 330250, 330390, 230640, 231010, 230110];
+      const targetFirst10 = [150010, 150040, 150020, 150030, 142290, 330330, 230890, 230640, 330250, 330160];
       const matchedRows = [];
+      const leaderCharId = leader ? leader.Id : null;
+      const leaderPosterId = leaderPoster ? leaderPoster.id : null;
 
       for (const row of batch) {
         const charIds = row.slice(0, 5);
         const posterIds = row.slice(5, 10);
         const accIds = row.slice(10, 15);
+
+        // 跳过不含队长角色或队长海报的组合
+        if (leaderCharId && !charIds.includes(leaderCharId)) continue;
+        if (leaderPosterId && !posterIds.includes(leaderPosterId)) continue;
 
         // 检查是否匹配目标前10个元素
         const isMatch = targetFirst10.every((tid, ti) => {
@@ -2972,10 +2978,23 @@ export default class RootLogic {
               const acc = new AccessoryData(id, null);
               acc.level = 10;
               acc.mainEffects.forEach(i => { i.level = 10; i.effect.level = 10; });
+              // parent=null 时不会创建 iconNode，需要手动补建
+              if (!acc.iconNode) {
+                acc.iconNode = root.accessoryIconList.appendChild(_('span', { className: 'list-icon-container small-text', event: { click: e => acc.toggleSelection() } }, [
+                  acc.iconNodeIcon = _('span', { className: 'spriteatlas-accessories', 'data-id': acc.id }),
+                  _('br'),
+                  acc.iconNodeLevelLabel = _('span', { style: { maxWidth: '64px' }}),
+                  acc.iconSelectionInput = _('input', { type: 'checkbox', className: 'icon-selection' }),
+                ]));
+              }
               const idx = selAccs.length;
               selAccs.push(acc);
               accIdToIdx.set(id, [idx]);
               accessoriesJson = selAccs.map(a => a.toJSON()); // 更新序列化数据
+              // 持久化到用户饰品列表
+              if (!root.appState.accessories.includes(acc)) {
+                root.appState.accessories.push(acc);
+              }
             } catch (err) {
               accIdToIdx.set(id, []); // 标记为无效
             }
@@ -3008,10 +3027,22 @@ export default class RootLogic {
               const acc = new AccessoryData(id, null);
               acc.level = 10;
               acc.mainEffects.forEach(i => { i.level = 10; i.effect.level = 10; });
+              if (!acc.iconNode) {
+                acc.iconNode = root.accessoryIconList.appendChild(_('span', { className: 'list-icon-container small-text', event: { click: e => acc.toggleSelection() } }, [
+                  acc.iconNodeIcon = _('span', { className: 'spriteatlas-accessories', 'data-id': acc.id }),
+                  _('br'),
+                  acc.iconNodeLevelLabel = _('span', { style: { maxWidth: '64px' }}),
+                  acc.iconSelectionInput = _('input', { type: 'checkbox', className: 'icon-selection' }),
+                ]));
+              }
               const idx = selAccs.length;
               selAccs.push(acc);
               pool.push(idx);
               accessoriesJson = selAccs.map(a => a.toJSON());
+              // 持久化到用户饰品列表
+              if (!root.appState.accessories.includes(acc)) {
+                root.appState.accessories.push(acc);
+              }
             } catch (err) { ok = false; break; }
           }
           accPerm.push(pool[used]);
@@ -3078,6 +3109,9 @@ export default class RootLogic {
             accessories: accIndices.map(i => selAccs[i]),
             bestScore: result.bestScore,
           };
+          // 打印 Worker 最佳队伍的原始索引和 ID
+          console.log(`[Worker最佳] indices: chars=${charIndices}, posters=${ppIndices}, accs=${accIndices}`);
+          console.log(`[Worker最佳] IDs: chars=${charIndices.map(i => selChars[i]?.Id)}, posters=${ppIndices.map(i => selPosters[i]?.id)}, accs=${accIndices.map(i => selAccs[i]?.id)}`);
         }
 
         // 计算匹配行的分数
