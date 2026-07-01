@@ -519,6 +519,8 @@ export default class PartyManager {
     const selectedAccs = [];
     let leaderIdx = 0;
     let leaderPosterIdx = -1;
+    let isAutoPartyCalculating = false;
+    let hasCompletedAutoPartyRun = false;
 
     const saveState = () => {
       const data = {
@@ -856,8 +858,16 @@ export default class PartyManager {
       if (charCount < 5) missing.push(`角色(${charCount}/5)`);
       if (posterCount < 5) missing.push(`海报(${posterCount}/5)`);
       if (accCount < 5) missing.push(`饰品(${accCount}/5)`);
+      if (isAutoPartyCalculating) {
+        startBtn.disabled = true;
+        startBtn.value = "计算中...";
+        startBtn.title = "";
+        return;
+      }
+      startBtn.value = hasCompletedAutoPartyRun ? "重新计算" : "开始计算";
       startBtn.disabled = missing.length > 0;
-      startBtn.title = missing.length > 0 ? `还需选择: ${missing.join("、")}` : "";
+      startBtn.title =
+        missing.length > 0 ? `还需选择: ${missing.join("、")}` : "";
     };
 
     const charSection = _("div", { style: { marginBottom: "15px" } });
@@ -1164,6 +1174,14 @@ export default class PartyManager {
       },
     });
 
+    const clearAutoPartyCalculationCache = () => {
+      if (root.stopAutoPartySearch) root.stopAutoPartySearch();
+      resultSection.style.display = "none";
+      resultSection.innerHTML = "";
+      progressFill.style.width = "0%";
+      progressText.textContent = "";
+    };
+
     const btnRow = _("div", {
       style: { display: "flex", justifyContent: "flex-end", gap: "10px" },
     });
@@ -1183,10 +1201,14 @@ export default class PartyManager {
       disabled: true,
       event: {
         click: async () => {
-          startBtn.disabled = true;
+          if (isAutoPartyCalculating) return;
+          isAutoPartyCalculating = true;
+          hasCompletedAutoPartyRun = false;
+          updateStartBtnState();
+          clearAutoPartyCalculationCache();
+          updateEstimate();
           cancelBtn.value = "关闭";
           progressSection.style.display = "";
-          resultSection.style.display = "none";
 
           const selChars = Array.from(selectedChars)
             .map((v, i) => (v ? i : -1))
@@ -1421,10 +1443,10 @@ export default class PartyManager {
                     const overallPct =
                       phase1Total + phase2Total > 0
                         ? (
-                          ((phase1Current + phase2Current) /
+                            ((phase1Current + phase2Current) /
                               (phase1Total + phase2Total)) *
                             100
-                        ).toFixed(1)
+                          ).toFixed(1)
                         : "0.0";
                     progressFill.style.width = overallPct + "%";
                     progressText.textContent = `评分中: ${phase2Current.toLocaleString()} / ${phase2Total.toLocaleString()} 候选 (${pct}%) - 当前最高分: ${bestScore}`;
@@ -1434,18 +1456,6 @@ export default class PartyManager {
             }
 
             if (result) {
-              const party = this.currentParty;
-              result.characters.forEach((c, i) => {
-                party.characters[i] = c;
-              });
-              result.posters.forEach((p, i) => {
-                party.posters[i] = p;
-              });
-              result.accessories.forEach((a, i) => {
-                party.accessories[i] = a;
-              });
-              party.leader = result.leader || leader;
-
               resultSection.style.display = "";
               resultSection.innerHTML = "";
               resultSection.appendChild(
@@ -1488,6 +1498,17 @@ export default class PartyManager {
                 style: { marginTop: "8px" },
                 event: {
                   click: () => {
+                    const party = this.currentParty;
+                    result.characters.forEach((c, i) => {
+                      party.characters[i] = c;
+                    });
+                    result.posters.forEach((p, i) => {
+                      party.posters[i] = p;
+                    });
+                    result.accessories.forEach((a, i) => {
+                      party.accessories[i] = a;
+                    });
+                    party.leader = leader;
                     root.update({ party: true });
                     overlay.remove();
                   },
@@ -1502,6 +1523,10 @@ export default class PartyManager {
             console.error(e);
             resultSection.style.display = "";
             resultSection.innerHTML = `<div style="color:red">计算出错: ${e.message}</div>`;
+          } finally {
+            isAutoPartyCalculating = false;
+            hasCompletedAutoPartyRun = true;
+            updateStartBtnState();
           }
         },
       },

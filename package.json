@@ -46,7 +46,9 @@
       {
         "from": "pyScript",
         "to": "pyScript",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "win": {

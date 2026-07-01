@@ -1218,16 +1218,16 @@ export default class RootLogic {
               }),
               chara.secondaryAttributeName
                 ? _("span", { className: "card-attribute-rotate" }, [
-                  _("span", {
+                    _("span", {
+                      className: `card-attribute-${chara.attributeName}`,
+                    }),
+                    _("span", {
+                      className: `card-attribute-${chara.secondaryAttributeName}`,
+                    }),
+                  ])
+                : _("span", {
                     className: `card-attribute-${chara.attributeName}`,
                   }),
-                  _("span", {
-                    className: `card-attribute-${chara.secondaryAttributeName}`,
-                  }),
-                ])
-                : _("span", {
-                  className: `card-attribute-${chara.attributeName}`,
-                }),
               _(
                 "span",
                 {
@@ -1511,14 +1511,14 @@ export default class RootLogic {
           keys.length === 0
             ? "（无）"
             : keys
-              .map((key) => {
-                const colored = key.replace(
-                  /<color=(#[0-9A-Fa-f]*)>(.*?)<\/color>/g,
-                  '<span style="color: $1">$2</span>',
-                );
-                return descCount[key] + "× " + colored;
-              })
-              .join("<br>");
+                .map((key) => {
+                  const colored = key.replace(
+                    /<color=(#[0-9A-Fa-f]*)>(.*?)<\/color>/g,
+                    '<span style="color: $1">$2</span>',
+                  );
+                  return descCount[key] + "× " + colored;
+                })
+                .join("<br>");
         this.albumEffectSummaryBody.innerHTML = bodyHtml;
       }
       if (parts.theaterLevel) {
@@ -1732,10 +1732,10 @@ export default class RootLogic {
                 i > 0
                   ? tl[i - 1]
                   : {
-                    cumulativeSenseScore: 0,
-                    cumulativeStarActScore: 0,
-                    time: 0,
-                  };
+                      cumulativeSenseScore: 0,
+                      cumulativeStarActScore: 0,
+                      time: 0,
+                    };
               const senseG = e.cumulativeSenseScore - prev.cumulativeSenseScore;
               const saG =
                 e.cumulativeStarActScore - prev.cumulativeStarActScore;
@@ -1821,10 +1821,10 @@ export default class RootLogic {
                 i > 0
                   ? tl[i - 1]
                   : {
-                    cumulativeSenseScore: 0,
-                    cumulativeStarActScore: 0,
-                    time: 0,
-                  };
+                      cumulativeSenseScore: 0,
+                      cumulativeStarActScore: 0,
+                      time: 0,
+                    };
               const senseG = e.cumulativeSenseScore - prev.cumulativeSenseScore;
               const saG =
                 e.cumulativeStarActScore - prev.cumulativeStarActScore;
@@ -2667,20 +2667,23 @@ export default class RootLogic {
                 `autoParty: WebGPU evaluating ${totalCombos.toLocaleString()} full combinations (${charPerms.length} × ${validPosterPerms.length} × ${accPerms.length})`,
               );
 
-              const gpuResult = await gpuCounter.computeFilteredPools({
-                timeline,
-                charDataPool: charLightParams,
-                posterDataPool: posterLightEffects,
-                accDataPool: accLightEffects,
-                charPerms,
-                posterPerms: validPosterPerms,
-                accPerms,
-                posterSlots,
-                leaderCharIdx: leaderIdx,
-                leaderPosterIdx: leaderPosterIdx >= 0 ? leaderPosterIdx : -1,
-                starActReq: starActReqs,
-                stockType,
-              });
+              const gpuResult = await gpuCounter.computeFilteredPools(
+                {
+                  timeline,
+                  charDataPool: charLightParams,
+                  posterDataPool: posterLightEffects,
+                  accDataPool: accLightEffects,
+                  charPerms,
+                  posterPerms: validPosterPerms,
+                  accPerms,
+                  posterSlots,
+                  leaderCharIdx: leaderIdx,
+                  leaderPosterIdx: leaderPosterIdx >= 0 ? leaderPosterIdx : -1,
+                  starActReq: starActReqs,
+                  stockType,
+                },
+                saThreshold,
+              );
 
               console.log(
                 `autoParty: WebGPU filtered to ${gpuResult.candidates.length} candidates (max starActCount: ${gpuResult.maxCount}, threshold: ${gpuResult.threshold})`,
@@ -2917,29 +2920,74 @@ export default class RootLogic {
     saThreshold = 1,
   }) {
     const leaderIdx = selChars.indexOf(leader);
-    const leaderPosterIdx = leaderPoster ? selPosters.indexOf(leaderPoster) : -1;
+    const leaderPosterIdx = leaderPoster
+      ? selPosters.indexOf(leaderPoster)
+      : -1;
 
     // 构建 ID → 索引映射
     const charIdToIdx = new Map();
-    selChars.forEach((c, i) => { if (!charIdToIdx.has(c.Id)) charIdToIdx.set(c.Id, []); charIdToIdx.get(c.Id).push(i); });
+    selChars.forEach((c, i) => {
+      if (!charIdToIdx.has(c.Id)) charIdToIdx.set(c.Id, []);
+      charIdToIdx.get(c.Id).push(i);
+    });
     const posterIdToIdx = new Map();
-    selPosters.forEach((p, i) => { if (!posterIdToIdx.has(p.id)) posterIdToIdx.set(p.id, []); posterIdToIdx.get(p.id).push(i); });
+    selPosters.forEach((p, i) => {
+      if (!posterIdToIdx.has(p.id)) posterIdToIdx.set(p.id, []);
+      posterIdToIdx.get(p.id).push(i);
+    });
     const accIdToIdx = new Map();
-    selAccs.forEach((a, i) => { if (!accIdToIdx.has(a.id)) accIdToIdx.set(a.id, []); accIdToIdx.get(a.id).push(i); });
-    
+    selAccs.forEach((a, i) => {
+      if (!accIdToIdx.has(a.id)) accIdToIdx.set(a.id, []);
+      accIdToIdx.get(a.id).push(i);
+    });
+
     // accIdToIdx转为json输出
-    console.log(`[handleAutoPartyPythonStream] accIdToIdx:`,accIdToIdx);
+    console.log(`[handleAutoPartyPythonStream] accIdToIdx:`, accIdToIdx);
     // 序列化固定数据（只需一次）
-    const charactersJson = selChars.map(c => c.toJSON());
-    const postersJson = selPosters.map(p => p.toJSON());
-    let accessoriesJson = selAccs.map(a => a.toJSON());
-    const starRankData = root.appState.characterStarRank ? root.appState.characterStarRank.toJSON() : {};
-    const theaterLevelData = root.appState.theaterLevel ? root.appState.theaterLevel.toJSON() : { Sirius: 0, Eden: 0, Gingaza: 0, Denki: 0 };
-    const albumExtraJson = (this.appState.albumExtra || []).map(pe => pe.toJSON());
-    const highScoreEffectData = (root.appState.highScoreBuffManager ? root.appState.highScoreBuffManager.currentActiveEffects() : []).map(e => ({ id: e.data.Id, level: e.level || 1 }));
-    const gameDbKeys = ['Character','CharacterBase','CharacterLevel','CharacterBloomBonusGroup','CharacterStarRank','Sense','StarAct','StarActCondition','LeaderSense','Category','AlbumEffect','PhotoEffect','Effect','EffectTriggerCharacterBaseGroup','Poster','PosterAbility','Accessory','AccessoryEffect','RandomEffectGroup','SenseNotation','CircleSupportCompanyLevelDetail'];
+    const charactersJson = selChars.map((c) => c.toJSON());
+    const postersJson = selPosters.map((p) => p.toJSON());
+    let accessoriesJson = selAccs.map((a) => a.toJSON());
+    const starRankData = root.appState.characterStarRank
+      ? root.appState.characterStarRank.toJSON()
+      : {};
+    const theaterLevelData = root.appState.theaterLevel
+      ? root.appState.theaterLevel.toJSON()
+      : { Sirius: 0, Eden: 0, Gingaza: 0, Denki: 0 };
+    const albumExtraJson = (this.appState.albumExtra || []).map((pe) =>
+      pe.toJSON(),
+    );
+    const highScoreEffectData = (
+      root.appState.highScoreBuffManager
+        ? root.appState.highScoreBuffManager.currentActiveEffects()
+        : []
+    ).map((e) => ({ id: e.data.Id, level: e.level || 1 }));
+    const gameDbKeys = [
+      "Character",
+      "CharacterBase",
+      "CharacterLevel",
+      "CharacterBloomBonusGroup",
+      "CharacterStarRank",
+      "Sense",
+      "StarAct",
+      "StarActCondition",
+      "LeaderSense",
+      "Category",
+      "AlbumEffect",
+      "PhotoEffect",
+      "Effect",
+      "EffectTriggerCharacterBaseGroup",
+      "Poster",
+      "PosterAbility",
+      "Accessory",
+      "AccessoryEffect",
+      "RandomEffectGroup",
+      "SenseNotation",
+      "CircleSupportCompanyLevelDetail",
+    ];
     const gameDbData = {};
-    gameDbKeys.forEach(key => { gameDbData[key] = GameDb[key]; });
+    gameDbKeys.forEach((key) => {
+      gameDbData[key] = GameDb[key];
+    });
 
     let overallBestScore = -1;
     let overallBestResult = null;
@@ -2954,7 +3002,10 @@ export default class RootLogic {
       batchCount++;
       const filteredCombinations = [];
 
-      const targetFirst10 = [150010, 150040, 150020, 150030, 142290, 330330, 230890, 230640, 330250, 330160];
+      const targetFirst10 = [
+        150010, 150040, 150020, 150030, 142290, 330330, 230890, 230640, 330250,
+        330160,
+      ];
       const matchedRows = [];
       const leaderCharId = leader ? leader.Id : null;
       const leaderPosterId = leaderPoster ? leaderPoster.id : null;
@@ -2981,32 +3032,56 @@ export default class RootLogic {
             try {
               const acc = new AccessoryData(id, null);
               acc.level = 10;
-              acc.mainEffects.forEach(i => { i.level = 10; i.effect.level = 10; });
+              acc.mainEffects.forEach((i) => {
+                i.level = 10;
+                i.effect.level = 10;
+              });
               // parent=null 时缺少的初始化：randomEffect、iconNode、UI 元素
               acc.effectBox = null;
               acc.levelSelect = null;
               acc.randomEffectSelect = null;
               if (acc.data.RandomEffectGroups.length > 0) {
-                const group = GameDb.RandomEffectGroup[acc.data.RandomEffectGroups[0]];
+                const group =
+                  GameDb.RandomEffectGroup[acc.data.RandomEffectGroups[0]];
                 if (group && group.AccessoryEffects.length > 0) {
                   acc.randomEffectId = String(group.AccessoryEffects[0]);
-                  acc.randomEffect = new AccessoryEffectData(acc.randomEffectId, null);
+                  acc.randomEffect = new AccessoryEffectData(
+                    acc.randomEffectId,
+                    null,
+                  );
                   acc.randomEffect.level = 10;
                   acc.randomEffect.effect.level = 10;
                 }
               }
               if (!acc.iconNode) {
-                acc.iconNode = root.accessoryIconList.appendChild(_('span', { className: 'list-icon-container small-text', event: { click: e => acc.toggleSelection() } }, [
-                  acc.iconNodeIcon = _('span', { className: 'spriteatlas-accessories', 'data-id': acc.id }),
-                  _('br'),
-                  acc.iconNodeLevelLabel = _('span', { style: { maxWidth: '64px' }}),
-                  acc.iconSelectionInput = _('input', { type: 'checkbox', className: 'icon-selection' }),
-                ]));
+                acc.iconNode = root.accessoryIconList.appendChild(
+                  _(
+                    "span",
+                    {
+                      className: "list-icon-container small-text",
+                      event: { click: (e) => acc.toggleSelection() },
+                    },
+                    [
+                      (acc.iconNodeIcon = _("span", {
+                        className: "spriteatlas-accessories",
+                        "data-id": acc.id,
+                      })),
+                      _("br"),
+                      (acc.iconNodeLevelLabel = _("span", {
+                        style: { maxWidth: "64px" },
+                      })),
+                      (acc.iconSelectionInput = _("input", {
+                        type: "checkbox",
+                        className: "icon-selection",
+                      })),
+                    ],
+                  ),
+                );
               }
               const idx = selAccs.length;
               selAccs.push(acc);
               accIdToIdx.set(id, [idx]);
-              accessoriesJson = selAccs.map(a => a.toJSON()); // 更新序列化数据
+              accessoriesJson = selAccs.map((a) => a.toJSON()); // 更新序列化数据
               // 持久化到用户饰品列表
               if (!root.appState.accessories.includes(acc)) {
                 root.appState.accessories.push(acc);
@@ -3022,9 +3097,15 @@ export default class RootLogic {
         let ok = true;
         for (const id of charIds) {
           const pool = charIdToIdx.get(id);
-          if (!pool) { ok = false; break; }
+          if (!pool) {
+            ok = false;
+            break;
+          }
           const used = charUsed.get(id) || 0;
-          if (used >= pool.length) { ok = false; break; }
+          if (used >= pool.length) {
+            ok = false;
+            break;
+          }
           charPerm.push(pool[used]);
           charUsed.set(id, used + 1);
         }
@@ -3035,43 +3116,73 @@ export default class RootLogic {
         ok = true;
         for (const id of accIds) {
           const pool = accIdToIdx.get(id);
-          if (!pool || pool.length === 0) { ok = false; break; }
+          if (!pool || pool.length === 0) {
+            ok = false;
+            break;
+          }
           const used = accUsed.get(id) || 0;
           if (used >= pool.length) {
             // 不够用，自动创建新饰品副本
             try {
               const acc = new AccessoryData(id, null);
               acc.level = 10;
-              acc.mainEffects.forEach(i => { i.level = 10; i.effect.level = 10; });
+              acc.mainEffects.forEach((i) => {
+                i.level = 10;
+                i.effect.level = 10;
+              });
               acc.effectBox = null;
               acc.levelSelect = null;
               acc.randomEffectSelect = null;
               if (acc.data.RandomEffectGroups.length > 0) {
-                const group = GameDb.RandomEffectGroup[acc.data.RandomEffectGroups[0]];
+                const group =
+                  GameDb.RandomEffectGroup[acc.data.RandomEffectGroups[0]];
                 if (group && group.AccessoryEffects.length > 0) {
                   acc.randomEffectId = String(group.AccessoryEffects[0]);
-                  acc.randomEffect = new AccessoryEffectData(acc.randomEffectId, null);
+                  acc.randomEffect = new AccessoryEffectData(
+                    acc.randomEffectId,
+                    null,
+                  );
                   acc.randomEffect.level = 10;
                   acc.randomEffect.effect.level = 10;
                 }
               }
               if (!acc.iconNode) {
-                acc.iconNode = root.accessoryIconList.appendChild(_('span', { className: 'list-icon-container small-text', event: { click: e => acc.toggleSelection() } }, [
-                  acc.iconNodeIcon = _('span', { className: 'spriteatlas-accessories', 'data-id': acc.id }),
-                  _('br'),
-                  acc.iconNodeLevelLabel = _('span', { style: { maxWidth: '64px' }}),
-                  acc.iconSelectionInput = _('input', { type: 'checkbox', className: 'icon-selection' }),
-                ]));
+                acc.iconNode = root.accessoryIconList.appendChild(
+                  _(
+                    "span",
+                    {
+                      className: "list-icon-container small-text",
+                      event: { click: (e) => acc.toggleSelection() },
+                    },
+                    [
+                      (acc.iconNodeIcon = _("span", {
+                        className: "spriteatlas-accessories",
+                        "data-id": acc.id,
+                      })),
+                      _("br"),
+                      (acc.iconNodeLevelLabel = _("span", {
+                        style: { maxWidth: "64px" },
+                      })),
+                      (acc.iconSelectionInput = _("input", {
+                        type: "checkbox",
+                        className: "icon-selection",
+                      })),
+                    ],
+                  ),
+                );
               }
               const idx = selAccs.length;
               selAccs.push(acc);
               pool.push(idx);
-              accessoriesJson = selAccs.map(a => a.toJSON());
+              accessoriesJson = selAccs.map((a) => a.toJSON());
               // 持久化到用户饰品列表
               if (!root.appState.accessories.includes(acc)) {
                 root.appState.accessories.push(acc);
               }
-            } catch (err) { ok = false; break; }
+            } catch (err) {
+              ok = false;
+              break;
+            }
           }
           accPerm.push(pool[used]);
           accUsed.set(id, used + 1);
@@ -3090,21 +3201,36 @@ export default class RootLogic {
           } else {
             const id = posterIds[pos];
             const pool = posterIdToIdxCopy.get(id);
-            if (!pool) { ok = false; break; }
+            if (!pool) {
+              ok = false;
+              break;
+            }
             const used = posterUsed2.get(id) || 0;
-            if (used >= pool.length) { ok = false; break; }
+            if (used >= pool.length) {
+              ok = false;
+              break;
+            }
             fullPosterIndices.push(pool[used]);
             posterUsed2.set(id, used + 1);
           }
         }
         if (!ok) continue;
-        filteredCombinations.push({ charPerm, posterPerm: fullPosterIndices, accPerm });
+        filteredCombinations.push({
+          charPerm,
+          posterPerm: fullPosterIndices,
+          accPerm,
+        });
       }
 
       totalProcessed += batch.length;
-      console.log(`[Python batch ${batchCount}] raw=${batch.length}, filtered=${filteredCombinations.length}, totalProcessed=${totalProcessed}`);
+      console.log(
+        `[Python batch ${batchCount}] raw=${batch.length}, filtered=${filteredCombinations.length}, totalProcessed=${totalProcessed}`,
+      );
 
-      if (filteredCombinations.length === 0) { console.log(`[Python batch ${batchCount}] skip empty batch`); return; }
+      if (filteredCombinations.length === 0) {
+        console.log(`[Python batch ${batchCount}] skip empty batch`);
+        return;
+      }
 
       // 打包
       const comboCount = filteredCombinations.length;
@@ -3112,35 +3238,59 @@ export default class RootLogic {
       for (let i = 0; i < comboCount; i++) {
         const c = filteredCombinations[i];
         const b = i * 15;
-        for (let j = 0; j < 5; j++) { flatData[b+j] = c.charPerm[j]; flatData[b+5+j] = c.posterPerm[j]; flatData[b+10+j] = c.accPerm[j]; }
+        for (let j = 0; j < 5; j++) {
+          flatData[b + j] = c.charPerm[j];
+          flatData[b + 5 + j] = c.posterPerm[j];
+          flatData[b + 10 + j] = c.accPerm[j];
+        }
       }
 
-      console.log(`[Python batch ${batchCount}] ${batch.length} results → ${comboCount} combos (${(flatData.byteLength/1024/1024).toFixed(1)}MB)`);
+      console.log(
+        `[Python batch ${batchCount}] ${batch.length} results → ${comboCount} combos (${(flatData.byteLength / 1024 / 1024).toFixed(1)}MB)`,
+      );
 
       try {
         const result = await this._autoPartyWorkerPool.runSearch({
-          precise: true, charactersJson, postersJson, accessoriesJson,
-          leaderIdx, leaderPosterIdx, starRankData,
-          albumLevel: this.appState.albumLevel, albumExtraJson,
-          highScoreEffectData, theaterLevelData,
+          precise: true,
+          charactersJson,
+          postersJson,
+          accessoriesJson,
+          leaderIdx,
+          leaderPosterIdx,
+          starRankData,
+          albumLevel: this.appState.albumLevel,
+          albumExtraJson,
+          highScoreEffectData,
+          theaterLevelData,
           notationId: this.senseNoteSelect ? this.senseNoteSelect.value | 0 : 0,
-          gameDbData, totalCombinations: comboCount, workerCount,
+          gameDbData,
+          totalCombinations: comboCount,
+          workerCount,
           saThreshold,
-          comboData: flatData, onProgress: onProgress || (() => {}),
+          comboData: flatData,
+          onProgress: onProgress || (() => {}),
         });
 
         if (result && result.bestScore > overallBestScore) {
           overallBestScore = result.bestScore;
-          const { charIndices, posterIndices: ppIndices, accIndices } = result.bestIndices;
+          const {
+            charIndices,
+            posterIndices: ppIndices,
+            accIndices,
+          } = result.bestIndices;
           overallBestResult = {
-            characters: charIndices.map(i => selChars[i]),
-            posters: ppIndices.map(i => selPosters[i]),
-            accessories: accIndices.map(i => selAccs[i]),
+            characters: charIndices.map((i) => selChars[i]),
+            posters: ppIndices.map((i) => selPosters[i]),
+            accessories: accIndices.map((i) => selAccs[i]),
             bestScore: result.bestScore,
           };
           // 打印 Worker 最佳队伍的原始索引和 ID
-          console.log(`[Worker最佳] indices: chars=${charIndices}, posters=${ppIndices}, accs=${accIndices}`);
-          console.log(`[Worker最佳] IDs: chars=${charIndices.map(i => selChars[i]?.Id)}, posters=${ppIndices.map(i => selPosters[i]?.id)}, accs=${accIndices.map(i => selAccs[i]?.id)}`);
+          console.log(
+            `[Worker最佳] indices: chars=${charIndices}, posters=${ppIndices}, accs=${accIndices}`,
+          );
+          console.log(
+            `[Worker最佳] IDs: chars=${charIndices.map((i) => selChars[i]?.Id)}, posters=${ppIndices.map((i) => selPosters[i]?.id)}, accs=${accIndices.map((i) => selAccs[i]?.id)}`,
+          );
         }
 
         // 计算匹配行的分数
@@ -3150,24 +3300,54 @@ export default class RootLogic {
             albumExtra: this.appState.albumExtra,
             leader: selChars[leaderIdx],
             type: ScoreCalculationType.Normal,
-            notationId: this.senseNoteSelect ? this.senseNoteSelect.value | 0 : 0,
-            highScoreEffects: root.appState.highScoreBuffManager ? root.appState.highScoreBuffManager.currentActiveEffects().map(e => ({ id: e.data.Id, level: e.level || 1 })) : [],
-            theaterEffects: root.appState.theaterLevel ? root.appState.theaterLevel.getEffects() : [],
+            notationId: this.senseNoteSelect
+              ? this.senseNoteSelect.value | 0
+              : 0,
+            highScoreEffects: root.appState.highScoreBuffManager
+              ? root.appState.highScoreBuffManager
+                  .currentActiveEffects()
+                  .map((e) => ({ id: e.data.Id, level: e.level || 1 }))
+              : [],
+            theaterEffects: root.appState.theaterLevel
+              ? root.appState.theaterLevel.getEffects()
+              : [],
           };
           for (const row of matchedRows) {
             const charIds = row.slice(0, 5);
             const posterIds = row.slice(5, 10);
             const accIds = row.slice(10, 15);
-            const members = charIds.map(id => selChars[charIdToIdx.get(id)?.[0]]).filter(Boolean);
-            const posters = posterIds.map(id => selPosters[posterIdToIdx.get(id)?.[0]]).filter(Boolean);
-            const accessories = accIds.map(id => selAccs[accIdToIdx.get(id)?.[0]]).filter(Boolean);
-            if (members.length === 5 && posters.length === 5 && accessories.length === 5) {
+            const members = charIds
+              .map((id) => selChars[charIdToIdx.get(id)?.[0]])
+              .filter(Boolean);
+            const posters = posterIds
+              .map((id) => selPosters[posterIdToIdx.get(id)?.[0]])
+              .filter(Boolean);
+            const accessories = accIds
+              .map((id) => selAccs[accIdToIdx.get(id)?.[0]])
+              .filter(Boolean);
+            if (
+              members.length === 5 &&
+              posters.length === 5 &&
+              accessories.length === 5
+            ) {
               try {
-                const calc = new ScoreCalculator(members, posters, accessories, extra);
+                const calc = new ScoreCalculator(
+                  members,
+                  posters,
+                  accessories,
+                  extra,
+                );
                 LiveSimulator.saDelayLastTiming = null;
                 calc.calcPure();
-                const totalScore = calc.result ? (calc.result.totalScore || (calc.result.baseScore[3] + calc.result.senseScore.reduce((a, b) => a + b, 0) + calc.result.starActScore.reduce((a, b) => a + b, 0))) : 0;
-                console.log(`[匹配队伍] 前10=${JSON.stringify(charIds.concat(posterIds))} 饰品=${JSON.stringify(accIds)} 分数=${totalScore}`);
+                const totalScore = calc.result
+                  ? calc.result.totalScore ||
+                    calc.result.baseScore[3] +
+                      calc.result.senseScore.reduce((a, b) => a + b, 0) +
+                      calc.result.starActScore.reduce((a, b) => a + b, 0)
+                  : 0;
+                console.log(
+                  `[匹配队伍] 前10=${JSON.stringify(charIds.concat(posterIds))} 饰品=${JSON.stringify(accIds)} 分数=${totalScore}`,
+                );
               } catch (err) {
                 console.error(`[匹配队伍] 计算出错:`, err.message);
               }
@@ -3182,7 +3362,9 @@ export default class RootLogic {
     // 启动流式读取 + 分批处理
     await batchReader(processBatch);
 
-    console.log(`[handleAutoPartyPythonStream] done: ${totalProcessed} results, ${batchCount} batches, bestScore=${overallBestScore}`);
+    console.log(
+      `[handleAutoPartyPythonStream] done: ${totalProcessed} results, ${batchCount} batches, bestScore=${overallBestScore}`,
+    );
     return overallBestResult;
   }
 
