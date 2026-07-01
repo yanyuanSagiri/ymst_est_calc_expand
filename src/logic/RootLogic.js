@@ -2679,7 +2679,7 @@ export default class RootLogic {
                 leaderPosterIdx: leaderPosterIdx >= 0 ? leaderPosterIdx : -1,
                 starActReq: starActReqs,
                 stockType,
-              });
+              }, saThreshold);
 
               console.log(
                 `autoParty: WebGPU filtered to ${gpuResult.candidates.length} candidates (max starActCount: ${gpuResult.maxCount}, threshold: ${gpuResult.threshold})`,
