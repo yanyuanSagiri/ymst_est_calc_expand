@@ -544,6 +544,13 @@ export default class PartyManager {
       } catch (_) {}
     };
 
+    const stopAutoPartyProcesses = () => {
+      if (root.stopAutoPartySearch) root.stopAutoPartySearch();
+      if (window.electronAPI?.stopFormation) window.electronAPI.stopFormation();
+      if (window.electronAPI?.removeFormationResultListener)
+        window.electronAPI.removeFormationResultListener();
+    };
+
     const closeBtn = _(
       "span",
       {
@@ -559,7 +566,7 @@ export default class PartyManager {
         },
         event: {
           click: () => {
-            if (root.stopAutoPartySearch) root.stopAutoPartySearch();
+            stopAutoPartyProcesses();
             overlay.remove();
           },
         },
@@ -1175,7 +1182,7 @@ export default class PartyManager {
     });
 
     const clearAutoPartyCalculationCache = () => {
-      if (root.stopAutoPartySearch) root.stopAutoPartySearch();
+      stopAutoPartyProcesses();
       resultSection.style.display = "none";
       resultSection.innerHTML = "";
       progressFill.style.width = "0%";
@@ -1190,7 +1197,7 @@ export default class PartyManager {
       value: "取消",
       event: {
         click: () => {
-          if (root.stopAutoPartySearch) root.stopAutoPartySearch();
+          stopAutoPartyProcesses();
           overlay.remove();
         },
       },
@@ -1277,7 +1284,7 @@ export default class PartyManager {
 
               // 流式接收 + 分批处理
               let overallBest = 0;
-              const PY_BATCH_SIZE = 500000;
+              const PY_BATCH_SIZE = 100000;
               const pyAccum = [];
               const batchQueue = [];
               let pyTotalReceived = 0;
@@ -1299,35 +1306,71 @@ export default class PartyManager {
                 saThreshold,
                 batchReader: async (processBatch) => {
                   let finReceived = false;
-                  const sendFIN = () => {
-                    if (finReceived) return;
-                    finReceived = true;
-                    console.log(
-                      `[PartyManager] sendFIN: totalReceived=${pyTotalReceived}, pyAccum=${pyAccum.length}`,
-                    );
-                    if (pyAccum.length > 0) {
-                      batchQueue.push(pyAccum.splice(0));
-                    }
-                    batchQueue.push(null);
+                  let pythonOutputPaused = false;
+
+                  const wakeBatchReader = () => {
                     if (resolveQueue) {
                       resolveQueue();
                       resolveQueue = null;
                     }
                   };
 
+                  const queueAccumulatedBatch = (force = false) => {
+                    if (pyAccum.length === 0) return false;
+                    if (!force && batchQueue.length > 0) return false;
+                    batchQueue.push(pyAccum.splice(0, pyAccum.length));
+                    wakeBatchReader();
+                    return true;
+                  };
+
+                  const pausePythonOutput = () => {
+                    if (pythonOutputPaused || !window.electronAPI.pauseFormation)
+                      return;
+                    pythonOutputPaused = true;
+                    window.electronAPI.pauseFormation().catch((err) => {
+                      console.warn("[PartyManager] pauseFormation failed:", err);
+                    });
+                  };
+
+                  const resumePythonOutput = async () => {
+                    if (
+                      !pythonOutputPaused ||
+                      finReceived ||
+                      !window.electronAPI.resumeFormation
+                    )
+                      return;
+                    pythonOutputPaused = false;
+                    try {
+                      await window.electronAPI.resumeFormation();
+                    } catch (err) {
+                      console.warn("[PartyManager] resumeFormation failed:", err);
+                    }
+                  };
+
+                  const sendFIN = () => {
+                    if (finReceived) return;
+                    finReceived = true;
+                    console.log(
+                      `[PartyManager] sendFIN: totalReceived=${pyTotalReceived}, pyAccum=${pyAccum.length}`,
+                    );
+                    queueAccumulatedBatch(true);
+                    batchQueue.push(null);
+                    wakeBatchReader();
+                  };
+
                   window.electronAPI.onFormationResult((msg) => {
                     if (msg.FIN) {
                       console.log(`[PartyManager] FIN via IPC`);
+                      sendFIN();
+                    } else if (msg.error) {
+                      console.error(`[PartyManager] Python error:`, msg.error);
                       sendFIN();
                     } else if (!msg.error) {
                       pyAccum.push(msg);
                       pyTotalReceived++;
                       if (pyAccum.length >= PY_BATCH_SIZE) {
-                        batchQueue.push(pyAccum.splice(0));
-                        if (resolveQueue) {
-                          resolveQueue();
-                          resolveQueue = null;
-                        }
+                        pausePythonOutput();
+                        queueAccumulatedBatch();
                       }
                     }
                     if (pyTotalReceived % 5000 === 0) {
@@ -1336,12 +1379,18 @@ export default class PartyManager {
                   });
 
                   // runFormation 的 Promise 在进程关闭时 resolve，作为 FIN 兜底
-                  window.electronAPI.runFormation(userData).then(() => {
-                    console.log(
-                      `[PartyManager] Python process closed, finReceived=${finReceived}`,
-                    );
-                    sendFIN();
-                  });
+                  const formationDone = window.electronAPI
+                    .runFormation(userData)
+                    .then(() => {
+                      console.log(
+                        `[PartyManager] Python process closed, finReceived=${finReceived}`,
+                      );
+                      sendFIN();
+                    })
+                    .catch((err) => {
+                      console.error(`[PartyManager] Python process error:`, err);
+                      sendFIN();
+                    });
 
                   while (true) {
                     while (batchQueue.length === 0) {
@@ -1356,7 +1405,16 @@ export default class PartyManager {
                       `[PartyManager] 批次 ${currentBatch}: 候选数=${batch.length}`,
                     );
                     await processBatch(batch);
+                    if (batchQueue.length === 0) {
+                      if (pyAccum.length >= PY_BATCH_SIZE) {
+                        pausePythonOutput();
+                        queueAccumulatedBatch();
+                      } else {
+                        await resumePythonOutput();
+                      }
+                    }
                   }
+                  await formationDone;
                   console.log(
                     `[PartyManager] Python 流式处理完成: 总候选数=${pyTotalReceived}, 总批次=${currentBatch}`,
                   );

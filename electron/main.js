@@ -7,6 +7,46 @@ const appIcon = nativeImage.createFromPath(iconPath);
 let mainWindow;
 let formationProcess = null;
 
+function writeFormationLine(payload) {
+  const child = formationProcess;
+  if (!child || !child.stdin || child.stdin.destroyed || child.killed) {
+    return false;
+  }
+  try {
+    child.stdin.write(JSON.stringify(payload) + "\n");
+    return true;
+  } catch (err) {
+    console.warn("[run-formation] failed to write stdin:", err);
+    return false;
+  }
+}
+
+function finishFormationInput() {
+  const child = formationProcess;
+  if (!child || !child.stdin || child.stdin.destroyed || child.killed) {
+    return false;
+  }
+  try {
+    child.stdin.write(JSON.stringify({ FIN: true }) + "\n");
+    child.stdin.end();
+    return true;
+  } catch (err) {
+    console.warn("[run-formation] failed to finish stdin:", err);
+    return false;
+  }
+}
+
+function stopFormationProcess() {
+  if (formationProcess) {
+    try {
+      formationProcess.kill();
+    } catch (err) {
+      console.warn("[run-formation] failed to kill process:", err);
+    }
+    formationProcess = null;
+  }
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -51,6 +91,8 @@ function getFormationDataPath() {
 
 ipcMain.handle("run-formation", async (event, userData) => {
   return new Promise((resolve, reject) => {
+    stopFormationProcess();
+
     const exePath = getFormationExePath();
     const dataPath = getFormationDataPath();
     const args = [
@@ -63,50 +105,66 @@ ipcMain.handle("run-formation", async (event, userData) => {
     console.log("[run-formation] data:", dataPath);
     console.log("[run-formation] input:", JSON.stringify(userData));
 
-    formationProcess = spawn(exePath, args, {
+    const child = spawn(exePath, args, {
       stdio: ["pipe", "pipe", "pipe"],
       cwd: path.dirname(exePath),
     });
+    formationProcess = child;
     let resultCount = 0;
     let finReceived = false;
     let stderrOutput = "";
+    let stdoutBuffer = "";
 
-    formationProcess.stdout.on("data", (data) => {
-      const raw = data.toString();
-      const lines = raw.split("\n").filter((l) => l.trim());
-      console.log(`[run-formation] stdout chunk: ${lines.length} lines, first=${lines[0]?.substring(0, 100)}`);
-      for (const line of lines) {
-        try {
-          const msg = JSON.parse(line);
-          if (msg.FIN) {
-            finReceived = true;
-            console.log("[run-formation] FIN received from Python");
-            if (mainWindow && !mainWindow.isDestroyed())
-              mainWindow.webContents.send("formation-result", { FIN: true });
-          } else if (msg.error) {
-            if (mainWindow && !mainWindow.isDestroyed())
-              mainWindow.webContents.send("formation-result", { error: msg.error });
-          } else {
-            resultCount++;
-            if (mainWindow && !mainWindow.isDestroyed())
-              mainWindow.webContents.send("formation-result", msg);
-          }
-        } catch (e) {}
+    const handleStdoutLine = (line) => {
+      if (!line.trim()) return;
+      try {
+        const msg = JSON.parse(line);
+        if (msg.FIN) {
+          finReceived = true;
+          console.log("[run-formation] FIN received from Python");
+          if (mainWindow && !mainWindow.isDestroyed())
+            mainWindow.webContents.send("formation-result", { FIN: true });
+          if (formationProcess === child) finishFormationInput();
+        } else if (msg.error) {
+          if (mainWindow && !mainWindow.isDestroyed())
+            mainWindow.webContents.send("formation-result", { error: msg.error });
+        } else {
+          resultCount++;
+          if (mainWindow && !mainWindow.isDestroyed())
+            mainWindow.webContents.send("formation-result", msg);
+        }
+      } catch (e) {
+        console.warn(
+          "[run-formation] failed to parse stdout line:",
+          line.substring(0, 120),
+        );
       }
+    };
+
+    child.stdout.on("data", (data) => {
+      stdoutBuffer += data.toString();
+      const lines = stdoutBuffer.split(/\r?\n/);
+      stdoutBuffer = lines.pop() || "";
+      console.log(`[run-formation] stdout chunk: ${lines.length} lines, first=${lines[0]?.substring(0, 100)}`);
+      for (const line of lines) handleStdoutLine(line);
     });
 
-    formationProcess.stderr.on("data", (data) => {
+    child.stderr.on("data", (data) => {
       stderrOutput += data.toString();
     });
 
-    formationProcess.on("error", (err) => {
-      formationProcess = null;
+    child.on("error", (err) => {
+      if (formationProcess === child) formationProcess = null;
       reject(err);
     });
 
-    formationProcess.on("close", (code) => {
+    child.on("close", (code) => {
+      if (stdoutBuffer.trim()) {
+        handleStdoutLine(stdoutBuffer);
+        stdoutBuffer = "";
+      }
       console.log("[run-formation] close, code:", code, "results:", resultCount, "finReceived:", finReceived);
-      formationProcess = null;
+      if (formationProcess === child) formationProcess = null;
       if (!finReceived) {
         console.log("[run-formation] FIN not received before close, sending fallback");
         if (mainWindow && !mainWindow.isDestroyed())
@@ -121,24 +179,24 @@ ipcMain.handle("run-formation", async (event, userData) => {
 
     const inputJson = JSON.stringify(userData) + "\n";
     console.log("[run-formation] input to Python:", inputJson);
-    formationProcess.stdin.write(inputJson);
-    formationProcess.stdin.end();
-
-    // 5分钟超时
-    const timeout = setTimeout(() => {
-      if (formationProcess) {
-        console.log("[run-formation] timeout, killing process");
-        formationProcess.kill();
-      }
-    }, 300000);
+    child.stdin.write(inputJson);
   });
 });
 
 ipcMain.handle("stop-formation", async () => {
-  if (formationProcess) {
-    formationProcess.kill();
-    formationProcess = null;
-  }
+  stopFormationProcess();
+});
+
+ipcMain.handle("pause-formation", async () => {
+  return writeFormationLine({ Control: "stop" });
+});
+
+ipcMain.handle("resume-formation", async () => {
+  return writeFormationLine({ Control: "continue" });
+});
+
+ipcMain.handle("finish-formation-input", async () => {
+  return finishFormationInput();
 });
 
 app.whenReady().then(createWindow);

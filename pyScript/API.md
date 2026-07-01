@@ -67,6 +67,7 @@ function runFormation(userData, options = {}) {
             else resolve(results);
         });
 
+        // 一次性调用可以立即关闭 stdin；如需暂停/继续，请保留 stdin，见“运行时控制消息”。
         process.stdin.write(JSON.stringify(userData) + '\n');
         process.stdin.end();
     });
@@ -183,6 +184,7 @@ ipcMain.handle('run-formation', async (event, userData, options = {}) => {
             }
         });
 
+        // 一次性调用可以立即关闭 stdin；如需暂停/继续，请保留 stdin，见“运行时控制消息”。
         process.stdin.write(JSON.stringify(userData) + '\n');
         process.stdin.end();
     });
@@ -255,8 +257,6 @@ document.getElementById('start').addEventListener('click', async () => {
 
 ### Python 调用
 
-#### 方式一：通过 exe 子进程调用
-
 ```python
 import subprocess
 import json
@@ -270,7 +270,7 @@ def run_formation(user_data, options=None):
             args.extend(['-mc'] + [str(x) for x in options['mandatory_characters']])
         if options.get('mandatory_posters'):
             args.extend(['-mp'] + [str(x) for x in options['mandatory_posters']])
-
+    
     process = subprocess.Popen(
         args,
         stdin=subprocess.PIPE,
@@ -278,7 +278,7 @@ def run_formation(user_data, options=None):
         stderr=subprocess.PIPE,
         text=True
     )
-
+    
     stdout, stderr = process.communicate(json.dumps(user_data) + '\n')
     results = []
     for line in stdout.strip().split('\n'):
@@ -297,53 +297,6 @@ user_data = {
 results = run_formation(user_data)
 ```
 
-#### 方式二：直接导入模块调用（支持动态传入游戏数据）
-
-```python
-import asyncio
-import json
-from StartForServer import main
-
-# 不传参 → 从本地 data/ 目录读取游戏数据
-asyncio.run(main())
-
-# 传入动态数据 → 跳过本地文件读取
-characters_data = [
-    {"Id": 110010, "CharacterBaseMasterId": 101, "Name": "愛城華恋", "Rarity": "Rare1", "Attribute": "Colorful", ...},
-    ...
-]
-posters_ability_data = [
-    {"PosterMasterId": 230010, "AbilityType": "VocalUp", "Value": 5, ...},
-    ...
-]
-effects_data = [
-    {"Id": 70052001, "Type": "PerformanceUp", "Value": 10, ...},
-    ...
-]
-accessory_data = [
-    {"CharacterBaseMasterId": 101, "AccessoryId": [430220, 330010, 430210]},
-    ...
-]
-
-asyncio.run(main(
-    characters_data=characters_data,
-    posters_ability_data=posters_ability_data,
-    effects_data=effects_data,
-    accessory_data=accessory_data
-))
-```
-
-**动态入参说明：**
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `characters_data` | `list[dict]` | CharacterMaster.json 的解析数据 |
-| `posters_ability_data` | `list[dict]` | PosterAbilityMaster.json 的解析数据 |
-| `effects_data` | `list[dict]` | EffectMaster.json 的解析数据 |
-| `accessory_data` | `list[dict]` | accessory_processed.json 的解析数据 |
-
-所有参数均为可选，不传时从本地 `data/` 目录读取文件。
-
 ## 输入格式
 
 ### 用户数据（通过 stdin 传入 JSON）
@@ -355,6 +308,45 @@ asyncio.run(main(
     "accessories": [330210, 332720, 430200, 430210, 430220]
 }
 ```
+
+### 运行时控制消息（暂停/继续）
+
+首次写入 stdin 的 JSON 必须是用户数据。进程运行期间可以继续向 stdin 写入控制消息，每行一个 JSON 对象：
+
+```json
+{"Control": "stop"}
+{"Control": "continue"}
+{"FIN": true}
+```
+
+| 消息 | 说明 |
+|------|------|
+| `{"Control": "stop"}` | 暂停 stdout 输出新的阵容结果。计算任务可能仍会继续，输出队列满后会自然产生背压。 |
+| `{"Control": "continue"}` | 恢复 stdout 输出阵容结果。 |
+| `{"FIN": true}` | 结束 stdin 监听。若为了暂停/继续而保留 stdin，收到 stdout 的 `{"FIN": true}` 后应发送该消息或关闭 stdin，让进程正常退出。 |
+
+Node.js 控制示例：
+
+```javascript
+const child = spawn('Start.exe', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+
+child.stdin.write(JSON.stringify(userData) + '\n');
+
+function pauseFormation() {
+    child.stdin.write(JSON.stringify({ Control: 'stop' }) + '\n');
+}
+
+function resumeFormation() {
+    child.stdin.write(JSON.stringify({ Control: 'continue' }) + '\n');
+}
+
+function finishInput() {
+    child.stdin.write(JSON.stringify({ FIN: true }) + '\n');
+    child.stdin.end();
+}
+```
+
+如果不需要暂停/继续，可以像前面的示例一样，在写入用户数据后立即调用 `stdin.end()`。
 
 **自动格式化**：工具会自动将简单数组转换为嵌套数组：
 - `characters: [1,2,3]` → `[[1],[2],[3]]`
@@ -412,6 +404,8 @@ const accessories = result.slice(10, 15); // 饰品
 ```json
 {"FIN": true}
 ```
+
+stdout 输出该标志表示没有更多阵容结果。它不同于 stdin 控制消息中的 `{"FIN": true}`：前者由程序输出，后者由调用方输入，用于结束控制输入监听。
 
 ### stderr
 
