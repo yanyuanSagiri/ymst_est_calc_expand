@@ -6,6 +6,20 @@ import removeAllChilds from "../removeAllChilds";
 
 // import {Swappable} from '@shopify/draggable';
 
+const AUTO_PARTY_SUGGESTION_TEXT = `
+1. 不要全选角色/海报/饰品！！！
+2. 最好选择队长和队长海报，减少计算量。
+3. 如果你的候选很多，可以分批多轮计算，因为每多选一个角色/海报/饰品，计算量会呈指数级增长。
+4. 第一轮勾选的饰品可以只选sa所需额外光对应的生日+sp光。
+5. 建议勾选数量：角色5，海报5-7，饰品5，需要选上队长海报。
+6. 如果你只用来跑配队不做别的事情，worker数量可以选16-20。
+7. SA阈值偏移：0只保留最高SA数组合，1保留最高和次高（默认），增大可保留更多候选，但会增加第二轮计算量。
+8. solo和jjc轴SA阈值一般填1或0就行。
+9. 如果白屏，就是程序崩了，建议减少worker数量与减少候选数量。
+10. WebGPU在worker数量较多的情况下优势不明显，可以不勾选。
+11. 思路比较重要，可以参考榜上或者群友的配队思路，然后根据自己的box调优。
+12. 自动配队是按照当前相册来计算的，不同相册配置可能会得到不同的结果。`;
+
 export default class PartyManager {
   constructor() {
     this.parties = [new Party()];
@@ -501,7 +515,7 @@ export default class PartyManager {
         (data.chars || []).forEach((id) => savedChars.add(id));
         (data.posters || []).forEach((id) => savedPosters.add(id));
         (data.accs || []).forEach((item) => {
-          const sep = item.indexOf('_');
+          const sep = item.indexOf("_");
           if (sep > 0) {
             const idx = parseInt(item.substring(0, sep));
             const id = parseInt(item.substring(sep + 1));
@@ -523,37 +537,125 @@ export default class PartyManager {
 
     const saveState = () => {
       const data = {
-        chars: characters.filter((_, i) => selectedChars[i]).map((c) => c.data.Id),
-        posters: posters.filter((_, i) => selectedPosters[i]).map((p) => p.data.Id),
-        accs: accessories.map((a, i) => selectedAccs[i] ? `${i}_${a.data.Id}` : null).filter(Boolean),
+        chars: characters
+          .filter((_, i) => selectedChars[i])
+          .map((c) => c.data.Id),
+        posters: posters
+          .filter((_, i) => selectedPosters[i])
+          .map((p) => p.data.Id),
+        accs: accessories
+          .map((a, i) => (selectedAccs[i] ? `${i}_${a.data.Id}` : null))
+          .filter(Boolean),
         leaderId: characters[leaderIdx]?.data.Id ?? null,
-        leaderPosterId: leaderPosterIdx >= 0 ? posters[leaderPosterIdx]?.data.Id ?? null : null,
+        leaderPosterId:
+          leaderPosterIdx >= 0
+            ? (posters[leaderPosterIdx]?.data.Id ?? null)
+            : null,
       };
-      try { localStorage.setItem("autoPartyState", JSON.stringify(data)); } catch (_) {}
+      try {
+        localStorage.setItem("autoPartyState", JSON.stringify(data));
+      } catch (_) {}
     };
 
-    const closeBtn = _("span", {
-      style: {
-        position: "absolute",
-        top: "18px",
-        right: "15px",
-        cursor: "pointer",
-        fontSize: "28px",
-        fontWeight: "bold",
-        color: "#666",
-        lineHeight: "1",
-      },
-      event: {
-        click: () => {
-          if (root.stopAutoPartySearch) root.stopAutoPartySearch();
-          overlay.remove();
+    const closeBtn = _(
+      "span",
+      {
+        style: {
+          position: "absolute",
+          top: "18px",
+          right: "15px",
+          cursor: "pointer",
+          fontSize: "28px",
+          fontWeight: "bold",
+          color: "#666",
+          lineHeight: "1",
+        },
+        event: {
+          click: () => {
+            if (root.stopAutoPartySearch) root.stopAutoPartySearch();
+            overlay.remove();
+          },
         },
       },
-    }, [_("text", "×")]);
+      [_("text", "×")],
+    );
 
-    const title = _("h3", { style: { marginTop: 0, paddingRight: "30px" } }, [
-      _("text", "自动配队 - 选择候选项"),
-    ]);
+    const showAutoPartySuggestion = () => {
+      const suggestionOverlay = _("div", {
+        className: "picking-overlay",
+        style: { zIndex: 10002 },
+        event: {
+          click: (e) => {
+            if (e.target === suggestionOverlay) suggestionOverlay.remove();
+          },
+        },
+      });
+      const suggestionDialog = _("div", {
+        style: {
+          position: "fixed",
+          top: "50%",
+          left: "50%",
+          transform: "translate(-50%, -50%)",
+          background: "white",
+          padding: "20px",
+          borderRadius: "8px",
+          boxShadow: "0 4px 20px rgba(0,0,0,0.3)",
+          width: "min(560px, 80vw)",
+          maxHeight: "75vh",
+          overflowY: "auto",
+          zIndex: 10003,
+        },
+      });
+      const suggestionCloseBtn = _("input", {
+        type: "button",
+        value: "关闭",
+        event: { click: () => suggestionOverlay.remove() },
+      });
+      suggestionDialog.appendChild(
+        _("h3", { style: { marginTop: 0 } }, [_("text", "配队建议")]),
+      );
+      suggestionDialog.appendChild(
+        _("div", { style: { whiteSpace: "pre-wrap", lineHeight: "1.6" } }, [
+          _("text", AUTO_PARTY_SUGGESTION_TEXT),
+        ]),
+      );
+      suggestionDialog.appendChild(
+        _(
+          "div",
+          {
+            style: {
+              display: "flex",
+              justifyContent: "flex-end",
+              marginTop: "12px",
+            },
+          },
+          [suggestionCloseBtn],
+        ),
+      );
+      suggestionOverlay.appendChild(suggestionDialog);
+      document.body.appendChild(suggestionOverlay);
+    };
+
+    const title = _(
+      "div",
+      {
+        style: {
+          display: "flex",
+          alignItems: "center",
+          gap: "12px",
+          marginBottom: "1em",
+          paddingRight: "30px",
+        },
+      },
+      [
+        _("h3", { style: { margin: 0 } }, [_("text", "自动配队 - 选择候选项")]),
+        _("input", {
+          type: "button",
+          value: "配队建议",
+          event: { click: showAutoPartySuggestion },
+        }),
+      ],
+    );
 
     const leaderSection = _("div", {
       style: {
@@ -640,6 +742,19 @@ export default class PartyManager {
 
     // Worker 数量设置
     const maxCores = navigator.hardwareConcurrency || 4;
+    const defaultWorkerCount = Math.max(1, maxCores - 2);
+    const clampWorkerCount = (value) => {
+      const parsed = parseInt(value);
+      if (!Number.isFinite(parsed)) return defaultWorkerCount;
+      return Math.max(1, Math.min(parsed, maxCores));
+    };
+    const savedWorkerCount = (() => {
+      try {
+        return clampWorkerCount(localStorage.getItem("autoPartyWorkerCount"));
+      } catch {
+        return defaultWorkerCount;
+      }
+    })();
     const workerSection = _("div", {
       style: {
         marginBottom: "15px",
@@ -655,11 +770,20 @@ export default class PartyManager {
     );
     const workerInput = _("input", {
       type: "number",
-      value: maxCores,
+      value: savedWorkerCount,
       min: 1,
       max: maxCores,
       step: 1,
       style: { width: "80px" },
+      event: {
+        change: (e) => {
+          const count = clampWorkerCount(e.target.value);
+          e.target.value = count;
+          try {
+            localStorage.setItem("autoPartyWorkerCount", count);
+          } catch {}
+        },
+      },
     });
     workerSection.appendChild(
       _("div", {}, [
@@ -669,11 +793,13 @@ export default class PartyManager {
       ]),
     );
     workerSection.appendChild(
-      _("div", {
-        style: { marginTop: "4px", fontSize: "12px", color: "#666" },
-      }, [
-        _("text", "建议使用全部核心数。减少数量可降低系统负载。"),
-      ]),
+      _(
+        "div",
+        {
+          style: { marginTop: "4px", fontSize: "12px", color: "#666" },
+        },
+        [_("text", "建议使用全部核心数。减少数量可降低系统负载。")],
+      ),
     );
 
     // SA 筛选阈值设置
@@ -691,7 +817,11 @@ export default class PartyManager {
       ]),
     );
     const savedThreshold = (() => {
-      try { return parseInt(localStorage.getItem("autoPartySAThreshold")) || 1; } catch { return 1; }
+      try {
+        return parseInt(localStorage.getItem("autoPartySAThreshold")) || 1;
+      } catch {
+        return 1;
+      }
     })();
     const saThresholdInput = _("input", {
       type: "number",
@@ -709,11 +839,18 @@ export default class PartyManager {
       ]),
     );
     saThresholdSection.appendChild(
-      _("div", {
-        style: { marginTop: "4px", fontSize: "12px", color: "#666" },
-      }, [
-        _("text", "设为 0 只保留最高 SA 组合。设为 1 保留最高和次高（默认）。增大可保留更多候选，但会增加第二轮计算量。"),
-      ]),
+      _(
+        "div",
+        {
+          style: { marginTop: "4px", fontSize: "12px", color: "#666" },
+        },
+        [
+          _(
+            "text",
+            "设为 0 只保留最高 SA 组合。设为 1 保留最高和次高（默认）。增大可保留更多候选，但会增加第二轮计算量。",
+          ),
+        ],
+      ),
     );
 
     // WebGPU 加速选项
@@ -734,9 +871,11 @@ export default class PartyManager {
       type: "checkbox",
       disabled: true,
     });
-    const gpuStatus = _("span", { style: { marginLeft: "8px", fontSize: "12px", color: "#999" } }, [
-      _("text", "检测中..."),
-    ]);
+    const gpuStatus = _(
+      "span",
+      { style: { marginLeft: "8px", fontSize: "12px", color: "#999" } },
+      [_("text", "检测中...")],
+    );
     gpuSection.appendChild(
       _("label", {}, [
         gpuCheckbox,
@@ -745,11 +884,18 @@ export default class PartyManager {
       ]),
     );
     gpuSection.appendChild(
-      _("div", {
-        style: { marginTop: "4px", fontSize: "12px", color: "#666" },
-      }, [
-        _("text", "WebGPU 会在 CPU 计算前先用 GPU 快速评估角色排列的 StarAct 触发次数，减少需要遍历的组合数。"),
-      ]),
+      _(
+        "div",
+        {
+          style: { marginTop: "4px", fontSize: "12px", color: "#666" },
+        },
+        [
+          _(
+            "text",
+            "WebGPU 会在 CPU 计算前先用 GPU 快速评估角色排列的 StarAct 触发次数，减少需要遍历的组合数。",
+          ),
+        ],
+      ),
     );
 
     // 异步检测 WebGPU 支持
@@ -775,10 +921,7 @@ export default class PartyManager {
     const perm = (n, k) =>
       n < k
         ? 0
-        : Array.from({ length: k }, (_, i) => n - i).reduce(
-          (a, b) => a * b,
-          1,
-        );
+        : Array.from({ length: k }, (_, i) => n - i).reduce((a, b) => a * b, 1);
 
     const updateEstimate = () => {
       const charCount = selectedChars.filter(Boolean).length;
@@ -810,7 +953,8 @@ export default class PartyManager {
       }
       startBtn.value = hasCompletedAutoPartyRun ? "重新计算" : "开始计算";
       startBtn.disabled = missing.length > 0;
-      startBtn.title = missing.length > 0 ? `还需选择: ${missing.join("、")}` : "";
+      startBtn.title =
+        missing.length > 0 ? `还需选择: ${missing.join("、")}` : "";
     };
 
     const charSection = _("div", { style: { marginBottom: "15px" } });
@@ -1004,7 +1148,9 @@ export default class PartyManager {
       },
     });
     accessories.forEach((a, idx) => {
-      const isChecked = (savedAccs.has(idx) && savedAccs.get(idx) === a.data.Id) || savedAccs.size === 0;
+      const isChecked =
+        (savedAccs.has(idx) && savedAccs.get(idx) === a.data.Id) ||
+        savedAccs.size === 0;
       selectedAccs[idx] = isChecked;
       const cb = _("input", {
         type: "checkbox",
@@ -1169,16 +1315,20 @@ export default class PartyManager {
 
           try {
             const useWebGPU = gpuCheckbox.checked && !gpuCheckbox.disabled;
-            const workerCount = parseInt(workerInput.value) || maxCores;
+            const workerCount = clampWorkerCount(workerInput.value);
+            workerInput.value = workerCount;
             const saThreshold = parseInt(saThresholdInput.value) || 1;
-            try { localStorage.setItem("autoPartySAThreshold", saThreshold); } catch {}
+            try {
+              localStorage.setItem("autoPartyWorkerCount", workerCount);
+              localStorage.setItem("autoPartySAThreshold", saThreshold);
+            } catch {}
             const result = await root.handleAutoParty({
               selChars,
               selPosters,
               selAccs,
               leader,
               leaderPoster,
-              searchMode: 'precise',
+              searchMode: "precise",
               useWebGPU,
               workerCount,
               saThreshold,
@@ -1188,9 +1338,19 @@ export default class PartyManager {
                 }
               },
               onProgress: (progress) => {
-                const { phase, phase1Current, phase1Total, phase2Current, phase2Total, bestScore } = progress;
-                if (phase === 'counting') {
-                  const pct = phase1Total > 0 ? ((phase1Current / phase1Total) * 100).toFixed(1) : '0.0';
+                const {
+                  phase,
+                  phase1Current,
+                  phase1Total,
+                  phase2Current,
+                  phase2Total,
+                  bestScore,
+                } = progress;
+                if (phase === "counting") {
+                  const pct =
+                    phase1Total > 0
+                      ? ((phase1Current / phase1Total) * 100).toFixed(1)
+                      : "0.0";
                   progressFill.style.width = pct + "%";
                   progressText.textContent = `筛选中: ${phase1Current.toLocaleString()} / ${phase1Total.toLocaleString()} 组合 (${pct}%)`;
                 } else {
@@ -1199,10 +1359,18 @@ export default class PartyManager {
                     estText.textContent = `筛选完成: ${phase1Total.toLocaleString()} 个组合 → ${phase2Total.toLocaleString()} 个候选`;
                   }
                   // GPU 模式时 onTotalReady 已设置 estText，不覆盖
-                  const pct = phase2Total > 0 ? ((phase2Current / phase2Total) * 100).toFixed(1) : '0.0';
-                  const overallPct = phase1Total + phase2Total > 0
-                    ? ((phase1Current + phase2Current) / (phase1Total + phase2Total) * 100).toFixed(1)
-                    : '0.0';
+                  const pct =
+                    phase2Total > 0
+                      ? ((phase2Current / phase2Total) * 100).toFixed(1)
+                      : "0.0";
+                  const overallPct =
+                    phase1Total + phase2Total > 0
+                      ? (
+                          ((phase1Current + phase2Current) /
+                            (phase1Total + phase2Total)) *
+                          100
+                        ).toFixed(1)
+                      : "0.0";
                   progressFill.style.width = overallPct + "%";
                   progressText.textContent = `评分中: ${phase2Current.toLocaleString()} / ${phase2Total.toLocaleString()} 候选 (${pct}%) - 当前最高分: ${bestScore}`;
                 }
@@ -1225,13 +1393,25 @@ export default class PartyManager {
                 return `${Math.floor(ms / 60000)}m${((ms % 60000) / 1000).toFixed(0)}s`;
               };
               const timeInfo = [];
-              if (result.filterDuration > 0) timeInfo.push(`筛选: ${formatDuration(result.filterDuration)}`);
-              if (result.scoringDuration > 0) timeInfo.push(`评分: ${formatDuration(result.scoringDuration)}`);
+              if (result.filterDuration > 0)
+                timeInfo.push(`筛选: ${formatDuration(result.filterDuration)}`);
+              if (result.scoringDuration > 0)
+                timeInfo.push(
+                  `评分: ${formatDuration(result.scoringDuration)}`,
+                );
               if (timeInfo.length > 0) {
                 resultSection.appendChild(
-                  _("div", { style: { fontSize: "12px", color: "#888", marginTop: "4px" } }, [
-                    _("text", timeInfo.join(' | ')),
-                  ]),
+                  _(
+                    "div",
+                    {
+                      style: {
+                        fontSize: "12px",
+                        color: "#888",
+                        marginTop: "4px",
+                      },
+                    },
+                    [_("text", timeInfo.join(" | "))],
+                  ),
                 );
               }
               const btnApply = _("input", {

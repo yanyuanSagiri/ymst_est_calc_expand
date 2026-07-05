@@ -158,6 +158,10 @@ async function runSearch(params) {
 
   // GPU 预筛选的完整组合
   const filteredCombinations = params.filteredCombinations || null;
+  const filterDuplicateCharacterBase = !!params.filterDuplicateCharacterBase;
+  const characterBaseIds = filterDuplicateCharacterBase
+    ? selChars.map(c => c.data.CharacterBaseMasterId)
+    : null;
 
   let bestScore = -1;
   let bestIndices = null;
@@ -223,11 +227,26 @@ async function runSearch(params) {
   } else {
     // ===== CPU 模式：两阶段筛选 =====
     const charPerms = [];
-    const permuteChars = (arr, current) => {
+    const permuteChars = (arr, current, usedBaseIds = null) => {
       if (current.length === 5) { charPerms.push(current); return; }
-      for (let i = 0; i < arr.length; i++) permuteChars(arr.filter((_, j) => j !== i), [...current, arr[i]]);
+      for (let i = 0; i < arr.length; i++) {
+        const idx = arr[i];
+        if (filterDuplicateCharacterBase) {
+          const baseId = characterBaseIds[idx];
+          if (usedBaseIds.has(baseId)) continue;
+          usedBaseIds.add(baseId);
+          permuteChars(arr.filter((_, j) => j !== i), [...current, idx], usedBaseIds);
+          usedBaseIds.delete(baseId);
+        } else {
+          permuteChars(arr.filter((_, j) => j !== i), [...current, idx]);
+        }
+      }
     };
-    permuteChars(selChars.map((_, i) => i), []);
+    permuteChars(
+      selChars.map((_, i) => i),
+      [],
+      filterDuplicateCharacterBase ? new Set() : null,
+    );
 
     const posterIndices = selPosters.map((_, i) => i).filter(i => i !== leaderPosterIdx);
     const posterSlots = leaderPosterIdx === -1 ? 5 : 4;
