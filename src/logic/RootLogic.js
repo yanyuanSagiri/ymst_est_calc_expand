@@ -903,9 +903,12 @@ export default class RootLogic {
       }),
     );
 
-    this.senseNoteSelect.value = this.appState.selectedNotation;
+    this.batchUpdating = true;
 
+    this.restoreCalcTypeFromState(this.appState.selectedCalcType);
+    this.senseNoteSelect.value = this.appState.selectedNotation;
     this.renderSenseNote(true);
+    this.batchUpdating = false;
     this.update({
       chara: true,
       poster: true,
@@ -916,10 +919,7 @@ export default class RootLogic {
       selection: true,
     });
     this.batchUpdating = true;
-
-    this.calcTypeSelectForm.tab.value = this.appState.selectedCalcType;
     this.tabSelectForm.tab.value = "character";
-    this.changeCalcTab();
     this.changeInventoryTab();
 
     window.addEventListener("blur", (_) => this.saveState());
@@ -975,8 +975,15 @@ export default class RootLogic {
     );
     this.appState.highScoreBuffManager.init();
     this.appState.selectedNotation = data.selectedNotation | 0;
-    this.appState.selectedCalcType =
-      data.selectedCalcType === "triple" ? "triple" : "normal";
+    this.appState.selectedCalcType = [
+      "normal",
+      "highscore",
+      "keiko",
+      "quiz",
+      "triple",
+    ].includes(data.selectedCalcType)
+      ? data.selectedCalcType
+      : "normal";
     this.batchUpdating = false;
   }
   addMissingFields(data) {
@@ -1020,12 +1027,18 @@ export default class RootLogic {
           const file = e.target.files[0];
           const reader = new FileReader();
           reader.onload = (e) => {
+            const currentNotation = this.senseNoteSelect.value | 0;
+            const currentCalcType =
+              this.calcTypeSelectForm.tab.value ||
+              this.appState.selectedCalcType ||
+              "normal";
+
             this.loadState(e.target.result);
 
             this.albumLevelSelect.value = this.appState.albumLevel;
-            this.senseNoteSelect.value = this.appState.selectedNotation;
+            this.restoreCalcTypeFromState(currentCalcType);
+            this.senseNoteSelect.value = currentNotation;
             this.renderSenseNote(true);
-            this.calcTypeSelectForm.tab.value = this.appState.selectedCalcType;
             this.update({
               chara: true,
               poster: true,
@@ -1115,6 +1128,27 @@ export default class RootLogic {
   changeCalcTab() {
     this.calcType = this.calcTypeSelectForm.tab.value;
     this.appState.selectedCalcType = this.calcType;
+  }
+  restoreCalcTypeFromState(val) {
+    this._calcType = val;
+    this.calcTypeSelectForm.tab.value = val;
+    this.appState.selectedCalcType = val;
+    this.normalCalcTabContent.style.display =
+      val !== "keiko" && val !== "triple" ? "" : "none";
+    this.highscoreCalcTabContent.style.display =
+      val === "highscore" ? "" : "none";
+    this.keikoCalcTabContent.style.display = val === "keiko" ? "" : "none";
+    this.tripleCastTabContent.style.display = val === "triple" ? "" : "none";
+    if (val === "triple") {
+      this.appState.tripleCastManager.init(this.tripleCastManagerContainer);
+      this.appState.tripleCastManager.fillNotationSelects();
+      for (let i = 0; i < 3; i++) {
+        if (this.appState.tripleCastManager.axes[i].notationId) {
+          this.appState.tripleCastManager.renderAxisSenseNote(i);
+        }
+      }
+    }
+    this.renderSenseNoteList();
   }
   changeInventoryTab() {
     const tab = this.tabSelectForm.tab.value;
@@ -2471,6 +2505,9 @@ export default class RootLogic {
     const charactersJson = selChars.map((c) => c.toJSON());
     const postersJson = selPosters.map((p) => p.toJSON());
     const accessoriesJson = selAccs.map((a) => a.toJSON());
+    const characterBaseIds = selChars.map((c) => c.data.CharacterBaseMasterId);
+    const filterDuplicateCharacterBase =
+      new Set(characterBaseIds).size !== characterBaseIds.length;
 
     const starRankData = root.appState.characterStarRank
       ? root.appState.characterStarRank.toJSON()
@@ -2635,10 +2672,25 @@ export default class RootLogic {
                 : 5;
 
             // 生成排列池
-            const charPerms = WebGPUStarActCounter.generatePermutations(
+            let charPerms = WebGPUStarActCounter.generatePermutations(
               selChars.length,
               5,
             ).filter((perm) => perm.includes(leaderIdx));
+            if (filterDuplicateCharacterBase) {
+              const before = charPerms.length;
+              charPerms = charPerms.filter((perm) => {
+                const usedBaseIds = new Set();
+                for (const idx of perm) {
+                  const baseId = characterBaseIds[idx];
+                  if (usedBaseIds.has(baseId)) return false;
+                  usedBaseIds.add(baseId);
+                }
+                return true;
+              });
+              console.log(
+                `autoParty: filtered duplicate CharacterBase permutations ${before.toLocaleString()} -> ${charPerms.length.toLocaleString()}`,
+              );
+            }
             const posterPermIndices = WebGPUStarActCounter.generatePermutations(
               posterIndices.length,
               posterSlots,
@@ -2860,6 +2912,7 @@ export default class RootLogic {
         totalCombinations,
         workerCount,
         saThreshold,
+        filterDuplicateCharacterBase,
         onProgress,
         filteredCombinations,
       });

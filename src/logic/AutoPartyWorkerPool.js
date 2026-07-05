@@ -8,7 +8,8 @@ export default class AutoPartyWorkerPool {
   async runSearch(params) {
     const { onProgress, saThreshold = 1 } = params;
     const maxCores = navigator.hardwareConcurrency || 4;
-    const workerCount = Math.max(1, Math.min(params.workerCount || maxCores, maxCores));
+    const defaultWorkerCount = Math.max(1, maxCores - 2);
+    const workerCount = Math.max(1, Math.min(params.workerCount || defaultWorkerCount, maxCores));
 
     // 终止旧 Worker
     for (const w of this.workers) {

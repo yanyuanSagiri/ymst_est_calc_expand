@@ -15,41 +15,41 @@ import CharacterStarRankData from "../character/CharacterStarRankData.js";
 import StarActData from "../character/StarActData.js";
 import TheaterLevelData from "../manager/TheaterLevelData.js";
 
-ConstText.language = 'zh';
+ConstText.language = "zh";
 
 const mockStarRank = new CharacterStarRankData();
 globalThis.root = {
   appState: {
     characterStarRank: mockStarRank,
   },
-  calcType: 'normal',
+  calcType: "normal",
   addWarningMessage: () => {},
 };
 
 const STATE = {
   isRunning: false,
-  shouldStop: false
+  shouldStop: false,
 };
 
 self.onmessage = (e) => {
   const { type, data } = e.data;
 
   switch (type) {
-    case 'START_SEARCH':
+    case "START_SEARCH":
       STATE.isRunning = true;
       STATE.shouldStop = false;
-      runSearch(data).catch(err => {
+      runSearch(data).catch((err) => {
         console.error(`Worker fatal error:`, err);
         self.postMessage({
-          type: 'COMPLETE',
-          data: { bestScore: -1, bestIndices: null, processed: 0, errors: 1 }
+          type: "COMPLETE",
+          data: { bestScore: -1, bestIndices: null, processed: 0, errors: 1 },
         });
       });
       break;
-    case 'STOP_SEARCH':
+    case "STOP_SEARCH":
       STATE.shouldStop = true;
       break;
-    case 'GLOBAL_THRESHOLD':
+    case "GLOBAL_THRESHOLD":
       if (self._resolveThreshold) {
         self._resolveThreshold(data.threshold);
         self._resolveThreshold = null;
@@ -78,7 +78,7 @@ async function runSearch(params) {
   } = params;
 
   // 从 flat Uint32Array 解包组合
-  let filteredCombinations = params.filteredCombinations;
+  let filteredCombinations = params.filteredCombinations || null;
   if (comboData) {
     const VALUES_PER_COMBO = 15;
     const comboCount = comboData.length / VALUES_PER_COMBO;
@@ -86,12 +86,32 @@ async function runSearch(params) {
     for (let i = 0; i < comboCount; i++) {
       const base = i * VALUES_PER_COMBO;
       filteredCombinations[i] = {
-        charPerm: [comboData[base], comboData[base+1], comboData[base+2], comboData[base+3], comboData[base+4]],
-        posterPerm: [comboData[base+5], comboData[base+6], comboData[base+7], comboData[base+8], comboData[base+9]],
-        accPerm: [comboData[base+10], comboData[base+11], comboData[base+12], comboData[base+13], comboData[base+14]],
+        charPerm: [
+          comboData[base],
+          comboData[base + 1],
+          comboData[base + 2],
+          comboData[base + 3],
+          comboData[base + 4],
+        ],
+        posterPerm: [
+          comboData[base + 5],
+          comboData[base + 6],
+          comboData[base + 7],
+          comboData[base + 8],
+          comboData[base + 9],
+        ],
+        accPerm: [
+          comboData[base + 10],
+          comboData[base + 11],
+          comboData[base + 12],
+          comboData[base + 13],
+          comboData[base + 14],
+        ],
       };
     }
-    console.log(`Worker ${workerId}: unpacked ${comboCount} combos from flat array`);
+    console.log(
+      `Worker ${workerId}: unpacked ${comboCount} combos from flat array`,
+    );
   }
 
   Object.entries(starRankData).forEach(([id, rank]) => {
@@ -107,17 +127,21 @@ async function runSearch(params) {
   const theaterLevel = TheaterLevelData.fromJSON(theaterLevelData);
   const theaterEffects = theaterLevel.getEffects();
 
-  const highScoreEffects = (highScoreEffectData || []).map(ed => Effect.get(ed.id, ed.level));
+  const highScoreEffects = (highScoreEffectData || []).map((ed) =>
+    Effect.get(ed.id, ed.level),
+  );
 
-  const albumExtra = (albumExtraJson || []).map(ed => {
+  const albumExtra = (albumExtraJson || []).map((ed) => {
     const pe = new PhotoEffectData(ed[0], ed[1], null, ed[2]);
     pe.effect = Effect.get(pe.data.EffectMasterId, pe.effectLevel);
     return pe;
   });
 
-  const selChars = charactersJson.map(d => {
+  const selChars = charactersJson.map((d) => {
     const c = CharacterData.fromJSON(d, null);
-    c.senseAll.forEach(s => { s.level = c.senselv; });
+    c.senseAll.forEach((s) => {
+      s.level = c.senselv;
+    });
     if (c.awaken && c.data.AwakenStarActMasterId) {
       c.staract = new StarActData(c.data.AwakenStarActMasterId, c.bloom);
     } else {
@@ -125,39 +149,52 @@ async function runSearch(params) {
     }
     c.updateBloomBonus();
     c.resetEffects();
-    c.bloomBonusEffects.forEach(effect => {
+    c.bloomBonusEffects.forEach((effect) => {
       switch (effect.Type) {
-        case 'SenseRecastDown': return c.senseAll.forEach(i => i.recastDown.push(effect.activeEffect.Value));
-        case 'DecreaseRequireSupportLight': return c.staract.requireDecrease[0] += effect.activeEffect.Value;
-        case 'DecreaseRequireControlLight': return c.staract.requireDecrease[1] += effect.activeEffect.Value;
-        case 'DecreaseRequireAmplificationLight': return c.staract.requireDecrease[2] += effect.activeEffect.Value;
-        case 'DecreaseRequireSpecialLight': return c.staract.requireDecrease[3] += effect.activeEffect.Value;
+        case "SenseRecastDown":
+          return c.senseAll.forEach((i) =>
+            i.recastDown.push(effect.activeEffect.Value),
+          );
+        case "DecreaseRequireSupportLight":
+          return (c.staract.requireDecrease[0] += effect.activeEffect.Value);
+        case "DecreaseRequireControlLight":
+          return (c.staract.requireDecrease[1] += effect.activeEffect.Value);
+        case "DecreaseRequireAmplificationLight":
+          return (c.staract.requireDecrease[2] += effect.activeEffect.Value);
+        case "DecreaseRequireSpecialLight":
+          return (c.staract.requireDecrease[3] += effect.activeEffect.Value);
       }
     });
     return c;
   });
-  const selPosters = postersJson.map(d => {
+  const selPosters = postersJson.map((d) => {
     const p = PosterData.fromJSON(d, null);
-    p.abilitiesData = Object.values(GameDb.PosterAbility).filter(i => i.PosterMasterId === p.id);
+    p.abilitiesData = Object.values(GameDb.PosterAbility).filter(
+      (i) => i.PosterMasterId === p.id,
+    );
     p.abilities = [];
-    p.abilitiesData.filter(i => i.Type === 'Leader').forEach(i => {
-      const ab = new PosterAbilityData(i.Id, null);
-      ab.level = p.level;
-      ab.release = p.release;
-      p.abilities.push(ab);
-    });
-    p.abilitiesData.filter(i => i.Type === 'Normal').forEach(i => {
-      const ab = new PosterAbilityData(i.Id, null);
-      ab.level = p.level;
-      ab.release = p.release;
-      p.abilities.push(ab);
-    });
+    p.abilitiesData
+      .filter((i) => i.Type === "Leader")
+      .forEach((i) => {
+        const ab = new PosterAbilityData(i.Id, null);
+        ab.level = p.level;
+        ab.release = p.release;
+        p.abilities.push(ab);
+      });
+    p.abilitiesData
+      .filter((i) => i.Type === "Normal")
+      .forEach((i) => {
+        const ab = new PosterAbilityData(i.Id, null);
+        ab.level = p.level;
+        ab.release = p.release;
+        p.abilities.push(ab);
+      });
     return p;
   });
-  const selAccs = accessoriesJson.map(d => {
+  const selAccs = accessoriesJson.map((d) => {
     const acc = new AccessoryData(d[0], null);
     acc.level = d[1];
-    acc.mainEffects.forEach(i => {
+    acc.mainEffects.forEach((i) => {
       i.level = acc.level;
       i.effect.level = acc.level;
     });
@@ -180,6 +217,12 @@ async function runSearch(params) {
     theaterEffects: theaterEffects,
   };
 
+  // GPU 预筛选的完整组合
+  const filterDuplicateCharacterBase = !!params.filterDuplicateCharacterBase;
+  const characterBaseIds = filterDuplicateCharacterBase
+    ? selChars.map((c) => c.data.CharacterBaseMasterId)
+    : null;
+
   let bestScore = -1;
   let bestIndices = null;
   let count = 0;
@@ -194,7 +237,9 @@ async function runSearch(params) {
     const endIdx = Math.min(startIdx + chunkSize, total);
     const chunkTotal = endIdx - startIdx;
 
-    console.log(`Worker ${workerId}: pre-filtered mode, ${chunkTotal} combinations, phase 1: SA counting`);
+    console.log(
+      `Worker ${workerId}: pre-filtered mode, ${chunkTotal} combinations, phase 1: SA counting`,
+    );
 
     // 阶段 1：计算 starActCount
     const candidates = [];
@@ -206,17 +251,25 @@ async function runSearch(params) {
       const fullPosterIndices = combo.posterPerm;
       const ap = combo.accPerm;
 
-      const members = cp.map(j => selChars[j]);
+      const members = cp.map((j) => selChars[j]);
       const leaderPos = cp.indexOf(leaderIdx);
-      const posters = fullPosterIndices.map(j => selPosters[j]);
-      const accessories = ap.map(j => selAccs[j]);
+      const posters = fullPosterIndices.map((j) => selPosters[j]);
+      const accessories = ap.map((j) => selAccs[j]);
 
       try {
         const leader = members[leaderPos];
-        if (!leader) { count++; continue; }
+        if (!leader) {
+          count++;
+          continue;
+        }
 
         const calcExtra = { ...extra, leader };
-        const calc = new ScoreCalculator(members, posters, accessories, calcExtra);
+        const calc = new ScoreCalculator(
+          members,
+          posters,
+          accessories,
+          calcExtra,
+        );
         LiveSimulator.saDelayLastTiming = null;
         const sa = calc.calcStarActCountOnly();
 
@@ -224,32 +277,56 @@ async function runSearch(params) {
         if (sa > localMaxSA) localMaxSA = sa;
       } catch (err) {
         errorCount++;
-        if (errorCount <= 5) console.error("calcStarActCountOnly error:", err.message);
+        if (errorCount <= 5)
+          console.error("calcStarActCountOnly error:", err.message);
       }
 
       count++;
       const now = Date.now();
       if (now - lastReportTime > 200) {
-        self.postMessage({ type: 'PROGRESS', data: { current: count, total: chunkTotal, bestScore: 0, errorCount, phase: 'counting' } });
+        self.postMessage({
+          type: "PROGRESS",
+          data: {
+            current: count,
+            total: chunkTotal,
+            bestScore: 0,
+            errorCount,
+            phase: "counting",
+          },
+        });
         lastReportTime = now;
       }
     }
 
-    self.postMessage({ type: 'PROGRESS', data: { current: count, total: chunkTotal, bestScore: 0, errorCount, phase: 'counting' } });
+    self.postMessage({
+      type: "PROGRESS",
+      data: {
+        current: count,
+        total: chunkTotal,
+        bestScore: 0,
+        errorCount,
+        phase: "counting",
+      },
+    });
 
     // 报告本地 maxSA，等待全局阈值
-    self.postMessage({ type: 'PHASE1_DONE', data: { maxSA: localMaxSA, candidateCount: candidates.length } });
+    self.postMessage({
+      type: "PHASE1_DONE",
+      data: { maxSA: localMaxSA, candidateCount: candidates.length },
+    });
 
-    const globalThreshold = await new Promise(resolve => {
+    const globalThreshold = await new Promise((resolve) => {
       self._resolveThreshold = resolve;
     });
 
     // 阶段 2：筛选 + 完整评分
-    const filtered = candidates.filter(c => c.sa >= globalThreshold);
+    const filtered = candidates.filter((c) => c.sa >= globalThreshold);
     count = 0;
     lastReportTime = Date.now();
 
-    console.log(`Worker ${workerId}: phase 2, threshold=${globalThreshold}, scoring ${filtered.length}/${candidates.length}`);
+    console.log(
+      `Worker ${workerId}: phase 2, threshold=${globalThreshold}, scoring ${filtered.length}/${candidates.length}`,
+    );
 
     for (const { combo } of filtered) {
       if (STATE.shouldStop) break;
@@ -258,29 +335,42 @@ async function runSearch(params) {
       const fullPosterIndices = combo.posterPerm;
       const ap = combo.accPerm;
 
-      const members = cp.map(j => selChars[j]);
+      const members = cp.map((j) => selChars[j]);
       const leaderPos = cp.indexOf(leaderIdx);
-      const posters = fullPosterIndices.map(j => selPosters[j]);
-      const accessories = ap.map(j => selAccs[j]);
+      const posters = fullPosterIndices.map((j) => selPosters[j]);
+      const accessories = ap.map((j) => selAccs[j]);
 
       try {
         const leader = members[leaderPos];
-        if (!leader) { count++; continue; }
+        if (!leader) {
+          count++;
+          continue;
+        }
 
         const calcExtra = { ...extra, leader };
-        const calc = new ScoreCalculator(members, posters, accessories, calcExtra);
+        const calc = new ScoreCalculator(
+          members,
+          posters,
+          accessories,
+          calcExtra,
+        );
         LiveSimulator.saDelayLastTiming = null;
         calc.calcPure();
 
         if (calc.result) {
-          const totalScore = calc.result.totalScore ||
-            (calc.result.baseScore[3] +
+          const totalScore =
+            calc.result.totalScore ||
+            calc.result.baseScore[3] +
               calc.result.senseScore.reduce((a, b) => a + b, 0) +
-              calc.result.starActScore.reduce((a, b) => a + b, 0));
+              calc.result.starActScore.reduce((a, b) => a + b, 0);
 
           if (totalScore > bestScore) {
             bestScore = totalScore;
-            bestIndices = { charIndices: cp, posterIndices: fullPosterIndices, accIndices: ap };
+            bestIndices = {
+              charIndices: cp,
+              posterIndices: fullPosterIndices,
+              accIndices: ap,
+            };
           }
         }
       } catch (err) {
@@ -291,36 +381,97 @@ async function runSearch(params) {
       count++;
       const now = Date.now();
       if (now - lastReportTime > 200) {
-        self.postMessage({ type: 'PROGRESS', data: { current: count, total: filtered.length, bestScore, errorCount, phase: 'scoring' } });
+        self.postMessage({
+          type: "PROGRESS",
+          data: {
+            current: count,
+            total: filtered.length,
+            bestScore,
+            errorCount,
+            phase: "scoring",
+          },
+        });
         lastReportTime = now;
       }
     }
-    self.postMessage({ type: 'PROGRESS', data: { current: count, total: count, bestScore, errorCount, phase: 'scoring' } });
-
+    self.postMessage({
+      type: "PROGRESS",
+      data: {
+        current: count,
+        total: count,
+        bestScore,
+        errorCount,
+        phase: "scoring",
+      },
+    });
   } else {
     // ===== CPU 模式：两阶段筛选 =====
     const charPerms = [];
-    const permuteChars = (arr, current) => {
-      if (current.length === 5) { charPerms.push(current); return; }
-      for (let i = 0; i < arr.length; i++) permuteChars(arr.filter((_, j) => j !== i), [...current, arr[i]]);
+    const permuteChars = (arr, current, usedBaseIds = null) => {
+      if (current.length === 5) {
+        charPerms.push(current);
+        return;
+      }
+      for (let i = 0; i < arr.length; i++) {
+        const idx = arr[i];
+        if (filterDuplicateCharacterBase) {
+          const baseId = characterBaseIds[idx];
+          if (usedBaseIds.has(baseId)) continue;
+          usedBaseIds.add(baseId);
+          permuteChars(
+            arr.filter((_, j) => j !== i),
+            [...current, idx],
+            usedBaseIds,
+          );
+          usedBaseIds.delete(baseId);
+        } else {
+          permuteChars(
+            arr.filter((_, j) => j !== i),
+            [...current, idx],
+          );
+        }
+      }
     };
-    permuteChars(selChars.map((_, i) => i), []);
+    permuteChars(
+      selChars.map((_, i) => i),
+      [],
+      filterDuplicateCharacterBase ? new Set() : null,
+    );
 
-    const posterIndices = selPosters.map((_, i) => i).filter(i => i !== leaderPosterIdx);
+    const posterIndices = selPosters
+      .map((_, i) => i)
+      .filter((i) => i !== leaderPosterIdx);
     const posterSlots = leaderPosterIdx === -1 ? 5 : 4;
     const posterPerms = [];
     const permutePosters = (arr, current) => {
-      if (current.length === posterSlots) { posterPerms.push(current); return; }
-      for (let i = 0; i < arr.length; i++) permutePosters(arr.filter((_, j) => j !== i), [...current, arr[i]]);
+      if (current.length === posterSlots) {
+        posterPerms.push(current);
+        return;
+      }
+      for (let i = 0; i < arr.length; i++)
+        permutePosters(
+          arr.filter((_, j) => j !== i),
+          [...current, arr[i]],
+        );
     };
     permutePosters(posterIndices, []);
 
     const accPerms = [];
     const permuteAccs = (arr, current) => {
-      if (current.length === 5) { accPerms.push(current); return; }
-      for (let i = 0; i < arr.length; i++) permuteAccs(arr.filter((_, j) => j !== i), [...current, arr[i]]);
+      if (current.length === 5) {
+        accPerms.push(current);
+        return;
+      }
+      for (let i = 0; i < arr.length; i++)
+        permuteAccs(
+          arr.filter((_, j) => j !== i),
+          [...current, arr[i]],
+        );
     };
-    permuteAccs(selAccs.map((_, i) => i), []);
+    permuteAccs(
+      selAccs.map((_, i) => i),
+      [],
+    );
 
     const total = charPerms.length * posterPerms.length * accPerms.length;
     const chunkSize = Math.ceil(total / totalWorkers);
@@ -354,20 +505,28 @@ async function runSearch(params) {
         continue;
       }
 
-      const members = cp.map(j => selChars[j]);
+      const members = cp.map((j) => selChars[j]);
       const leaderPos = cp.indexOf(leaderIdx);
-      const posters = pp.map(j => selPosters[j]);
+      const posters = pp.map((j) => selPosters[j]);
       if (leaderPosterIdx >= 0) {
         posters.splice(leaderPos, 0, selPosters[leaderPosterIdx]);
       }
-      const accessories = ap.map(j => selAccs[j]);
+      const accessories = ap.map((j) => selAccs[j]);
 
       try {
         const leader = members[leaderPos];
-        if (!leader) { count++; continue; }
+        if (!leader) {
+          count++;
+          continue;
+        }
 
         const calcExtra = { ...extra, leader };
-        const calc = new ScoreCalculator(members, posters, accessories, calcExtra);
+        const calc = new ScoreCalculator(
+          members,
+          posters,
+          accessories,
+          calcExtra,
+        );
         LiveSimulator.saDelayLastTiming = null;
         const starActCount = calc.calcStarActCountOnly();
 
@@ -379,27 +538,45 @@ async function runSearch(params) {
         });
       } catch (err) {
         errorCount++;
-        if (errorCount <= 5) console.error("calcStarActCountOnly error:", err.message);
+        if (errorCount <= 5)
+          console.error("calcStarActCountOnly error:", err.message);
       }
 
       count++;
       const now = Date.now();
       if (now - lastReportTime > 200) {
-        self.postMessage({ type: 'PROGRESS', data: { current: count, total: endIdx - startIdx, bestScore: 0, errorCount, phase: 'counting' } });
+        self.postMessage({
+          type: "PROGRESS",
+          data: {
+            current: count,
+            total: endIdx - startIdx,
+            bestScore: 0,
+            errorCount,
+            phase: "counting",
+          },
+        });
         lastReportTime = now;
       }
     }
 
     // 报告 maxSA 给 pool，等待全局阈值
-    const localMaxSA = candidates.reduce((m, c) => Math.max(m, c.starActCount), 0);
-    self.postMessage({ type: 'PHASE1_DONE', data: { maxSA: localMaxSA, candidateCount: candidates.length } });
+    const localMaxSA = candidates.reduce(
+      (m, c) => Math.max(m, c.starActCount),
+      0,
+    );
+    self.postMessage({
+      type: "PHASE1_DONE",
+      data: { maxSA: localMaxSA, candidateCount: candidates.length },
+    });
 
     // 等待 pool 广播全局阈值
-    const globalThreshold = await new Promise(resolve => {
+    const globalThreshold = await new Promise((resolve) => {
       self._resolveThreshold = resolve;
     });
 
-    const filtered = candidates.filter(c => c.starActCount >= globalThreshold);
+    const filtered = candidates.filter(
+      (c) => c.starActCount >= globalThreshold,
+    );
 
     count = 0;
     for (const candidate of filtered) {
@@ -409,28 +586,37 @@ async function runSearch(params) {
       const pp = candidate.posterPerm;
       const ap = candidate.accPerm;
 
-      const members = cp.map(j => selChars[j]);
+      const members = cp.map((j) => selChars[j]);
       const leaderPos = cp.indexOf(leaderIdx);
-      const posters = pp.map(j => selPosters[j]);
+      const posters = pp.map((j) => selPosters[j]);
       if (leaderPosterIdx >= 0) {
         posters.splice(leaderPos, 0, selPosters[leaderPosterIdx]);
       }
-      const accessories = ap.map(j => selAccs[j]);
+      const accessories = ap.map((j) => selAccs[j]);
 
       try {
         const leader = members[leaderPos];
-        if (!leader) { count++; continue; }
+        if (!leader) {
+          count++;
+          continue;
+        }
 
         const calcExtra = { ...extra, leader };
-        const calc = new ScoreCalculator(members, posters, accessories, calcExtra);
+        const calc = new ScoreCalculator(
+          members,
+          posters,
+          accessories,
+          calcExtra,
+        );
         LiveSimulator.saDelayLastTiming = null;
         calc.calcPure();
 
         if (calc.result) {
-          const totalScore = calc.result.totalScore ||
-            (calc.result.baseScore[3] +
+          const totalScore =
+            calc.result.totalScore ||
+            calc.result.baseScore[3] +
               calc.result.senseScore.reduce((a, b) => a + b, 0) +
-              calc.result.starActScore.reduce((a, b) => a + b, 0));
+              calc.result.starActScore.reduce((a, b) => a + b, 0);
 
           if (totalScore > bestScore) {
             bestScore = totalScore;
@@ -444,7 +630,11 @@ async function runSearch(params) {
                 fullPosterIndices.push(pp[ppI2++]);
               }
             }
-            bestIndices = { charIndices: cp, posterIndices: fullPosterIndices, accIndices: ap };
+            bestIndices = {
+              charIndices: cp,
+              posterIndices: fullPosterIndices,
+              accIndices: ap,
+            };
           }
         }
       } catch (err) {
@@ -453,20 +643,34 @@ async function runSearch(params) {
       }
 
       count++;
-      self.postMessage({ type: 'PROGRESS', data: { current: count, total: filtered.length, bestScore, errorCount, phase: 'scoring' } });
+      self.postMessage({
+        type: "PROGRESS",
+        data: {
+          current: count,
+          total: filtered.length,
+          bestScore,
+          errorCount,
+          phase: "scoring",
+        },
+      });
     }
   }
 
-  console.log(`Worker ${workerId}: precise search done`, { bestScore, processed: count, errors: errorCount, hasResult: !!bestIndices });
+  console.log(`Worker ${workerId}: precise search done`, {
+    bestScore,
+    processed: count,
+    errors: errorCount,
+    hasResult: !!bestIndices,
+  });
 
   self.postMessage({
-    type: 'COMPLETE',
+    type: "COMPLETE",
     data: {
       bestScore,
       bestIndices,
       processed: count,
       errors: errorCount,
-    }
+    },
   });
   STATE.isRunning = false;
 }
@@ -474,7 +678,8 @@ async function runSearch(params) {
 function isPosterPermValid(posterPerm, leaderPosterIdx, allPosters) {
   const usedRestrictGroups = new Set();
   if (leaderPosterIdx >= 0) {
-    const leaderRestrictId = allPosters[leaderPosterIdx]?.data?.OrganizeRestrictGroupId;
+    const leaderRestrictId =
+      allPosters[leaderPosterIdx]?.data?.OrganizeRestrictGroupId;
     if (leaderRestrictId) usedRestrictGroups.add(leaderRestrictId);
   }
   for (let i = 0; i < posterPerm.length; i++) {

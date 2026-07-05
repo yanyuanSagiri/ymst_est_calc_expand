@@ -50,7 +50,8 @@ export default class TripleCastManager {
     this.container = container;
     removeAllChilds(container);
 
-    this.notationSelects = [];
+    this.tripleCastSelect = null;
+    this.axisNotationLabels = [];
     this.senseBoxes = [];
     this.partySelects = [];
     this.partyNameInputs = [];
@@ -63,10 +64,30 @@ export default class TripleCastManager {
     this.swappables.forEach((s) => s && s.destroy());
     this.swappables = [];
 
+    const tripleCastSelect = _("select", {
+      event: {
+        change: (e) => {
+          this.setTripleCastNotation(e.target.value | 0);
+          for (let i = 0; i < 3; i++) {
+            this.renderAxisSenseNote(i);
+          }
+          try {
+            root.update({ party: true });
+          } catch (err) {
+            console.error(err);
+          }
+        },
+      },
+    });
+    this.tripleCastSelect = tripleCastSelect;
+
     container.appendChild(
       _("div", { style: { marginBottom: "8px" } }, [
         (this.highEndFilter = _("input", { type: "checkbox" })),
         _("text", "查询列表仅显示：四星角色/SSR海报/Lv10饰品"),
+        _("span", { style: { margin: "0 8px" } }),
+        _("text", "公演日期: "),
+        tripleCastSelect,
         _("span", { style: { margin: "0 8px" } }),
         _(
           "button",
@@ -103,20 +124,10 @@ export default class TripleCastManager {
         style: { flex: 1, minWidth: "300px", padding: "0 4px" },
       });
 
-      const notationSelect = _("select", {
-        event: {
-          change: (e) => {
-            this.axes[axisIdx].notationId = e.target.value | 0;
-            this.renderAxisSenseNote(axisIdx);
-            try {
-              root.update({ party: true });
-            } catch (err) {
-              console.error(err);
-            }
-          },
-        },
+      const axisNotationLabel = _("span", {
+        style: { marginLeft: "4px", fontSize: "12px", color: "#666" },
       });
-      this.notationSelects.push(notationSelect);
+      this.axisNotationLabels.push(axisNotationLabel);
 
       // const partyNameInput = _("input", {
       //   type: "text",
@@ -208,8 +219,7 @@ export default class TripleCastManager {
               ConstText.get("TRIPLE_AXIS_LABEL").replace("{n}", axisIdx + 1),
             ),
           ]),
-          _("span", { style: { margin: "0 4px" } }),
-          notationSelect,
+          axisNotationLabel,
         ]),
       );
       axisSection.appendChild(
@@ -268,52 +278,67 @@ export default class TripleCastManager {
     this.fillNotationSelects();
   }
 
-  fillNotationSelects() {
-    const buildOptions = () => {
-      const options = [];
-      const leagueNotationIdMap = Object.values(GameDb.League).reduce(
-        (acc, i) => {
-          acc[i.SenseNotationMasterId] = i.Id;
-          return acc;
-        },
-        {},
-      );
-      const tripleCastNotationIdMap = Object.values(GameDb.TripleCast).reduce(
-        (acc, i) => {
-          acc[i.SenseNotationMasterId1] = [i.Id, "1 (マチネ)"];
-          acc[i.SenseNotationMasterId2] = [i.Id, "2 (ジュルネ)"];
-          acc[i.SenseNotationMasterId3] = [i.Id, "3 (ソワレ)"];
-          return acc;
-        },
-        {},
-      );
-      Object.values(GameDb.SenseNotation).forEach((i) => {
-        let text = i.Id;
-        if (GameDb.StoryEvent[i.Id] !== undefined) {
-          text += ` - ${GameDb.StoryEvent[i.Id].Title}`;
-        } else if (leagueNotationIdMap[i.Id] !== undefined) {
-          text += ` - League @ ${GameDb.League[leagueNotationIdMap[i.Id]].DisplayStartAt}`;
-        } else if (tripleCastNotationIdMap[i.Id] !== undefined) {
-          text += ` - Triple Cast @ ${GameDb.TripleCast[tripleCastNotationIdMap[i.Id][0]].DisplayStartAt} ${tripleCastNotationIdMap[i.Id][1]}`;
-        }
-        options.push({ value: i.Id, text });
-      });
-      return options;
-    };
-
-    const options = buildOptions();
-    this.notationSelects.forEach((select, idx) => {
-      removeAllChilds(select);
-      options.forEach((opt) => {
-        select.appendChild(
-          _("option", { value: opt.value }, [_("text", opt.text)]),
-        );
-      });
-      if (this.axes[idx].notationId) {
-        select.value = this.axes[idx].notationId;
-      }
+  setTripleCastNotation(tripleCastId) {
+    const tripleCast = GameDb.TripleCast[tripleCastId];
+    if (!tripleCast) return false;
+    [
+      tripleCast.SenseNotationMasterId1,
+      tripleCast.SenseNotationMasterId2,
+      tripleCast.SenseNotationMasterId3,
+    ].forEach((notationId, idx) => {
+      this.axes[idx].notationId = notationId | 0;
     });
+    this.updateAxisNotationLabels();
+    return true;
+  }
+
+  getSelectedTripleCastId() {
+    const notationIds = this.axes.map((axis) => axis.notationId | 0);
+    const tripleCast = Object.values(GameDb.TripleCast).find(
+      (i) =>
+        (i.SenseNotationMasterId1 | 0) === notationIds[0] &&
+        (i.SenseNotationMasterId2 | 0) === notationIds[1] &&
+        (i.SenseNotationMasterId3 | 0) === notationIds[2],
+    );
+    return tripleCast ? String(tripleCast.Id) : "";
+  }
+
+  updateAxisNotationLabels() {
+    const labels = ["1 (マチネ)", "2 (ジュルネ)", "3 (ソワレ)"];
+    this.axisNotationLabels?.forEach((label, idx) => {
+      const notationId = this.axes[idx].notationId;
+      label.textContent = notationId ? ` ${notationId} - ${labels[idx]}` : "";
+    });
+  }
+
+  getTripleCastDateText(tripleCast) {
+    return String(tripleCast.DisplayStartAt || tripleCast.Id).split(/[T\s]/)[0];
+  }
+
+  fillNotationSelects() {
+    if (this.tripleCastSelect) {
+      removeAllChilds(this.tripleCastSelect);
+      this.tripleCastSelect.appendChild(
+        _("option", { value: "" }, [_("text", "请选择")]),
+      );
+      Object.values(GameDb.TripleCast)
+        .slice()
+        .sort((a, b) => {
+          if (a.DisplayStartAt === b.DisplayStartAt) return a.Id - b.Id;
+          return a.DisplayStartAt < b.DisplayStartAt ? 1 : -1;
+        })
+        .forEach((i) => {
+          this.tripleCastSelect.appendChild(
+            _("option", { value: i.Id }, [
+              _("text", this.getTripleCastDateText(i)),
+            ]),
+          );
+        });
+      this.tripleCastSelect.value = this.getSelectedTripleCastId();
+    }
+    this.updateAxisNotationLabels();
     for (let i = 0; i < 3; i++) {
+      this.renderAxisSenseNote(i);
       this.fillPartySelect(i);
       if (this.partyNameInputs[i])
         this.partyNameInputs[i].value = this.axes[i].party.name;
