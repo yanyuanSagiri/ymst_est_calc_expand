@@ -37,13 +37,57 @@ function finishFormationInput() {
 }
 
 function stopFormationProcess() {
-  if (formationProcess) {
-    try {
-      formationProcess.kill();
-    } catch (err) {
-      console.warn("[run-formation] failed to kill process:", err);
-    }
-    formationProcess = null;
+  const child = formationProcess;
+  if (!child) return Promise.resolve(false);
+
+  formationProcess = null;
+
+  try {
+    if (child.stdin && !child.stdin.destroyed) child.stdin.destroy();
+  } catch (err) {
+    console.warn("[run-formation] failed to destroy stdin:", err);
+  }
+
+  if (process.platform === "win32" && child.pid) {
+    return new Promise((resolve) => {
+      const killer = spawn(
+        "taskkill",
+        ["/PID", String(child.pid), "/T", "/F"],
+        { stdio: "ignore", windowsHide: true },
+      );
+
+      killer.on("error", (err) => {
+        console.warn("[run-formation] failed to start taskkill:", err);
+        try {
+          child.kill();
+        } catch (killErr) {
+          console.warn("[run-formation] fallback kill failed:", killErr);
+        }
+        resolve(false);
+      });
+
+      killer.on("close", (code) => {
+        if (code !== 0) {
+          console.warn(
+            `[run-formation] taskkill exited with code ${code}, falling back to child.kill()`,
+          );
+          try {
+            child.kill();
+          } catch (killErr) {
+            console.warn("[run-formation] fallback kill failed:", killErr);
+          }
+        }
+        resolve(code === 0);
+      });
+    });
+  }
+
+  try {
+    child.kill("SIGTERM");
+    return Promise.resolve(true);
+  } catch (err) {
+    console.warn("[run-formation] failed to kill process:", err);
+    return Promise.resolve(false);
   }
 }
 
@@ -90,9 +134,8 @@ function getFormationDataPath() {
 }
 
 ipcMain.handle("run-formation", async (event, userData) => {
+  await stopFormationProcess();
   return new Promise((resolve, reject) => {
-    stopFormationProcess();
-
     const exePath = getFormationExePath();
     const dataPath = getFormationDataPath();
     const args = [
@@ -100,10 +143,11 @@ ipcMain.handle("run-formation", async (event, userData) => {
       "-mc", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0",
       "-mp", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0",
     ];
+    const inputJson = JSON.stringify(userData);
 
-    console.log("[run-formation] exe:", exePath);
-    console.log("[run-formation] data:", dataPath);
-    console.log("[run-formation] input:", JSON.stringify(userData));
+    console.log("[run-formation] Python exe:", exePath);
+    console.log("[run-formation] Python argv:", [exePath, ...args]);
+    console.log("[run-formation] Python stdin payload:", inputJson);
 
     const child = spawn(exePath, args, {
       stdio: ["pipe", "pipe", "pipe"],
@@ -177,14 +221,12 @@ ipcMain.handle("run-formation", async (event, userData) => {
       }
     });
 
-    const inputJson = JSON.stringify(userData) + "\n";
-    console.log("[run-formation] input to Python:", inputJson);
-    child.stdin.write(inputJson);
+    child.stdin.write(inputJson + "\n");
   });
 });
 
 ipcMain.handle("stop-formation", async () => {
-  stopFormationProcess();
+  return stopFormationProcess();
 });
 
 ipcMain.handle("pause-formation", async () => {
@@ -200,6 +242,10 @@ ipcMain.handle("finish-formation-input", async () => {
 });
 
 app.whenReady().then(createWindow);
+
+app.on("before-quit", () => {
+  stopFormationProcess();
+});
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
