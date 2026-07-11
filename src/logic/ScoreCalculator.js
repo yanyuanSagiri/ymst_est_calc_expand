@@ -9,7 +9,7 @@ import Effect from "../effect/Effect";
 
 import _, { CREATE_FRAGMENT } from "../createElement";
 import removeAllChilds from "../removeAllChilds";
-import CharacterStat from "../character/CharacterStat"
+import CharacterStat from "../character/CharacterStat";
 
 export default class ScoreCalculator {
   constructor(members, posters, accessories, extra) {
@@ -81,6 +81,24 @@ export default class ScoreCalculator {
 
     this.liveSim = new LiveSimulator(this, extra.notationId);
   }
+
+  applyBloomPrincipalGaugeLimitUp() {
+    this.members.forEach((chara, idx) => {
+      if (!chara) return;
+      chara.bloomBonusEffects.forEach((effect) => {
+        if (effect.Type !== "PrincipalGaugeLimitUp") return;
+        effect.applyEffect(this, idx, StatBonusType.Album);
+      });
+    });
+  }
+
+  applyRegularBloomBonusEffects(chara, idx) {
+    chara.bloomBonusEffects.forEach((effect) => {
+      if (effect.Type === "PrincipalGaugeLimitUp") return;
+      effect.applyEffect(this, idx, StatBonusType.Album);
+    });
+  }
+
   calc(node) {
     node && removeAllChilds(node);
 
@@ -107,6 +125,8 @@ export default class ScoreCalculator {
           effect.applyEffect(this, idx, StatBonusType.Other);
         }
       });
+
+    this.applyBloomPrincipalGaugeLimitUp();
 
     const passiveEffects = this.passiveEffects;
     Object.values(GameDb.AlbumEffect)
@@ -162,9 +182,7 @@ export default class ScoreCalculator {
       if (!chara) return;
       this.liveSim.skipSense[idx] = chara.data.CharacterBaseMasterId === 401;
       // 开花效果
-      chara.bloomBonusEffects.forEach((effect) =>
-        effect.applyEffect(this, idx, StatBonusType.Album),
-      );
+      this.applyRegularBloomBonusEffects(chara, idx);
 
       // 海报效果
       const poster = this.posters[idx];
@@ -225,7 +243,7 @@ export default class ScoreCalculator {
         this.extra.notationId !== undefined
           ? this.extra.notationId
           : root.senseNoteSelect.value | 0;
-      const notationBuffValue = this.members.map(_ => [0, 0, 0, 0])
+      const notationBuffValue = this.members.map((_) => [0, 0, 0, 0]);
       const notation = GameDb.SenseNotation[notationId];
       notation?.Buffs?.forEach((notationBuff) => {
         for (let i = 0; i < 5; i++) {
@@ -257,14 +275,15 @@ export default class ScoreCalculator {
             isBuffTarget = true;
           }
           if (isBuffTarget) {
-            notationBuffValue[i][StatBonus[notationBuff.StatusType]] += notationBuff.BuffValue * 100
+            notationBuffValue[i][StatBonus[notationBuff.StatusType]] +=
+              notationBuff.BuffValue * 100;
           }
         }
       });
       notationBuffValue.forEach((buff, i) => {
-        if (!buff.some(i => i > 0)) return
-        buff.forEach((buff, idx) => this.stat.buffAfterCalc[i][idx].push(buff))
-      })
+        if (!buff.some((i) => i > 0)) return;
+        buff.forEach((buff, idx) => this.stat.buffAfterCalc[i][idx].push(buff));
+      });
     }
 
     // leader sense
@@ -488,6 +507,8 @@ export default class ScoreCalculator {
       }
     });
 
+    this.applyBloomPrincipalGaugeLimitUp();
+
     const passiveEffects = this.passiveEffects;
     Object.values(GameDb.AlbumEffect)
       .reverse()
@@ -540,9 +561,7 @@ export default class ScoreCalculator {
     this.members.forEach((chara, idx) => {
       if (!chara) return;
       this.liveSim.skipSense[idx] = chara.data.CharacterBaseMasterId === 401;
-      chara.bloomBonusEffects.forEach((effect) =>
-        effect.applyEffect(this, idx, StatBonusType.Album),
-      );
+      this.applyRegularBloomBonusEffects(chara, idx);
 
       const poster = this.posters[idx];
       poster?.abilities.forEach((ability) => {
@@ -599,7 +618,7 @@ export default class ScoreCalculator {
     if (this.extra.type !== ScoreCalculationType.Keiko) {
       const notationId =
         this.extra.notationId !== undefined ? this.extra.notationId : 0;
-      const notationBuffValue = this.members.map(_ => [0, 0, 0, 0])
+      const notationBuffValue = this.members.map((_) => [0, 0, 0, 0]);
       const notation = GameDb.SenseNotation[notationId];
       notation?.Buffs?.forEach((notationBuff) => {
         for (let i = 0; i < 5; i++) {
@@ -629,14 +648,15 @@ export default class ScoreCalculator {
           }
           if (notationBuff.TargetValue === undefined) isBuffTarget = true;
           if (isBuffTarget) {
-            notationBuffValue[i][StatBonus[notationBuff.StatusType]] += notationBuff.BuffValue * 100
+            notationBuffValue[i][StatBonus[notationBuff.StatusType]] +=
+              notationBuff.BuffValue * 100;
           }
         }
       });
       notationBuffValue.forEach((buff, i) => {
-        if (!buff.some(i => i > 0)) return
-        buff.forEach((buff, idx) => this.stat.buffAfterCalc[i][idx].push(buff))
-      })
+        if (!buff.some((i) => i > 0)) return;
+        buff.forEach((buff, idx) => this.stat.buffAfterCalc[i][idx].push(buff));
+      });
     }
 
     this.memberMatchingCategories = this.members.map((_) => ({}));
@@ -858,215 +878,215 @@ export default class ScoreCalculator {
           chara === null
             ? _("text", "")
             : _("details", {}, [
-              _("summary", {}, [
-                _("span", {
-                  className: `card-attribute-${chara.attributeName}`,
-                }),
-                chara.secondaryAttributeName
-                  ? _(CREATE_FRAGMENT, {}, [
-                    _("text", "|"),
-                    _("span", {
-                      className: `card-attribute-${chara.secondaryAttributeName}`,
-                    }),
-                  ])
-                  : new Comment(""),
-                _(
-                  "text",
-                  `${chara.fullCardName} CT: ` +
+                _("summary", {}, [
+                  _("span", {
+                    className: `card-attribute-${chara.attributeName}`,
+                  }),
+                  chara.secondaryAttributeName
+                    ? _(CREATE_FRAGMENT, {}, [
+                        _("text", "|"),
+                        _("span", {
+                          className: `card-attribute-${chara.secondaryAttributeName}`,
+                        }),
+                      ])
+                    : new Comment(""),
+                  _(
+                    "text",
+                    `${chara.fullCardName} CT: ` +
                       chara.senseAll.map((i) => i.ct).join(" / "),
-                ),
-                _(
-                  "span",
-                  {},
-                  Object.keys(this.memberMatchingCategories[idx]).map(
-                    (category) =>
-                      _("span", { className: "character-category" }, [
-                        _("text", GameDb.Category[category].Name),
-                      ]),
                   ),
-                ),
-              ]),
-              _("table", { className: "stat-details" }, [
-                _("thead", {}, [
-                  _("tr", { className: rowNumber++ % 2 ? "odd-row" : "" }, [
-                    _("th"),
-                    _("th", { "data-text-key": "VOCAL" }, [
-                      _("text", "歌唱力"),
-                    ]),
-                    _("th", { "data-text-key": "EXPRESSION" }, [
-                      _("text", "表現力"),
-                    ]),
-                    _("th", { "data-text-key": "CONCENTRATION" }, [
-                      _("text", "集中力"),
-                    ]),
-                    _("th", { "data-text-key": "PERFORMANCE" }, [
-                      _("text", "演技力"),
-                    ]),
-                  ]),
-                ]),
-                _("tbody", {}, [
-                  _("tr", { className: rowNumber++ % 2 ? "odd-row" : "" }, [
-                    _("td", { "data-text-key": "CALC_TABLE_INITIAL" }, [
-                      _("text", "初期値"),
-                    ]),
-                    _("td", { className: "stat-value" }, [
-                      _("text", this.stat.initial[idx].vo),
-                    ]),
-                    _("td", { className: "stat-value" }, [
-                      _("text", this.stat.initial[idx].ex),
-                    ]),
-                    _("td", { className: "stat-value" }, [
-                      _("text", this.stat.initial[idx].co),
-                    ]),
-                    _("td", { className: "stat-value" }, [
-                      _("text", this.stat.initial[idx].total),
-                    ]),
-                  ]),
-                ]),
-                _(
-                  "tbody",
-                  {},
-                  [
-                    "CALC_TABLE_ALBUM",
-                    "CALC_TABLE_POSTER",
-                    "CALC_TABLE_ACCESSORY",
-                    "CALC_TABLE_ACTOR",
-                    "CALC_TABLE_OTHER",
-                  ].map((name, j) =>
-                    _("tr", { className: rowNumber++ % 2 ? "odd-row" : "" }, [
-                      _("td", { "data-text-key": name }, [_("text", name)]),
-                      _("td", { className: "stat-value" }, [
-                        _(
-                          "text",
-                          `${buffPercentageDisplay(this.stat, idx, j, StatBonus.Vocal)}\n+${this.stat.buffFinal[idx][j][1][StatBonus.Vocal]}\n${this.stat.bonus[idx][j].vo}`,
-                        ),
-                      ]),
-                      _("td", { className: "stat-value" }, [
-                        _(
-                          "text",
-                          `${buffPercentageDisplay(this.stat, idx, j, StatBonus.Expression)}\n+${this.stat.buffFinal[idx][j][1][StatBonus.Expression]}\n${this.stat.bonus[idx][j].ex}`,
-                        ),
-                      ]),
-                      _("td", { className: "stat-value" }, [
-                        _(
-                          "text",
-                          `${buffPercentageDisplay(this.stat, idx, j, StatBonus.Concentration)}\n+${this.stat.buffFinal[idx][j][1][StatBonus.Concentration]}\n${this.stat.bonus[idx][j].co}`,
-                        ),
-                      ]),
-                      _("td", { className: "stat-value" }, [
-                        _(
-                          "text",
-                          `${buffPercentageDisplay(this.stat, idx, j, StatBonus.Performance)}\n${this.stat.bonus[idx][j].total}`,
-                        ),
-                      ]),
-                    ]),
-                  ),
-                ),
-                _("tbody", {}, [
-                  _("tr", { className: rowNumber++ % 2 ? "odd-row" : "" }, [
-                    _("td", { "data-text-key": "CALC_TABLE_TOTAL_BONUS" }, [
-                      _("text", "上昇合計"),
-                    ]),
-                    _("td", { className: "stat-value" }, [
-                      _(
-                        "text",
-                        `${this.stat.buffFinal[idx][StatBonusType.Total][0][StatBonus.Vocal] / 100}%/${this.stat.buffLimit[idx][0][StatBonus.Vocal] / 100}%\n+${this.stat.buffFinal[idx][StatBonusType.Total][1][StatBonus.Vocal]}\n${this.stat.bonus[idx][StatBonusType.Total].vo}`,
-                      ),
-                    ]),
-                    _("td", { className: "stat-value" }, [
-                      _(
-                        "text",
-                        `${this.stat.buffFinal[idx][StatBonusType.Total][0][StatBonus.Expression] / 100}%/${this.stat.buffLimit[idx][0][StatBonus.Expression] / 100}%\n+${this.stat.buffFinal[idx][StatBonusType.Total][1][StatBonus.Expression]}\n${this.stat.bonus[idx][StatBonusType.Total].ex}`,
-                      ),
-                    ]),
-                    _("td", { className: "stat-value" }, [
-                      _(
-                        "text",
-                        `${this.stat.buffFinal[idx][StatBonusType.Total][0][StatBonus.Concentration] / 100}%/${this.stat.buffLimit[idx][0][StatBonus.Concentration] / 100}%\n+${this.stat.buffFinal[idx][StatBonusType.Total][1][StatBonus.Concentration]}\n${this.stat.bonus[idx][StatBonusType.Total].co}`,
-                      ),
-                    ]),
-                    _("td", { className: "stat-value" }, [
-                      _(
-                        "text",
-                        `${this.stat.buffFinal[idx][StatBonusType.Total][0][StatBonus.Performance] / 100}%/${this.stat.buffLimit[idx][0][StatBonus.Performance] / 100}%\n${this.stat.bonus[idx][StatBonusType.Total].total}`,
-                      ),
-                    ]),
-                  ]),
-                ]),
-                this.stat.buffAfterCalc[idx].every((i) => i.length === 0)
-                  ? new Comment("CALC_TABLE_EXTRA_UP")
-                  : _("tbody", {}, [
-                    _(
-                      "tr",
-                      { className: rowNumber++ % 2 ? "odd-row" : "" },
-                      [
-                        _(
-                          "td",
-                          { "data-text-key": "CALC_TABLE_EXTRA_UP" },
-                          [_("text", "额外加成")],
-                        ),
-                        _("td", { className: "stat-value" }, [
-                          _(
-                            "text",
-                            this.stat.buffAfterCalc[idx][StatBonus.Vocal]
-                              .map((i) => `+${i / 100}%`)
-                              .join("\n"),
-                          ),
+                  _(
+                    "span",
+                    {},
+                    Object.keys(this.memberMatchingCategories[idx]).map(
+                      (category) =>
+                        _("span", { className: "character-category" }, [
+                          _("text", GameDb.Category[category].Name),
                         ]),
-                        _("td", { className: "stat-value" }, [
-                          _(
-                            "text",
-                            this.stat.buffAfterCalc[idx][
-                              StatBonus.Expression
-                            ]
-                              .map((i) => `+${i / 100}%`)
-                              .join("\n"),
-                          ),
-                        ]),
-                        _("td", { className: "stat-value" }, [
-                          _(
-                            "text",
-                            this.stat.buffAfterCalc[idx][
-                              StatBonus.Concentration
-                            ]
-                              .map((i) => `+${i / 100}%`)
-                              .join("\n"),
-                          ),
-                        ]),
-                        _("td", { className: "stat-value" }, [
-                          _(
-                            "text",
-                            this.stat.buffAfterCalc[idx][
-                              StatBonus.Performance
-                            ]
-                              .map((i) => `+${i / 100}%`)
-                              .join("\n"),
-                          ),
-                        ]),
-                      ],
                     ),
+                  ),
+                ]),
+                _("table", { className: "stat-details" }, [
+                  _("thead", {}, [
+                    _("tr", { className: rowNumber++ % 2 ? "odd-row" : "" }, [
+                      _("th"),
+                      _("th", { "data-text-key": "VOCAL" }, [
+                        _("text", "歌唱力"),
+                      ]),
+                      _("th", { "data-text-key": "EXPRESSION" }, [
+                        _("text", "表現力"),
+                      ]),
+                      _("th", { "data-text-key": "CONCENTRATION" }, [
+                        _("text", "集中力"),
+                      ]),
+                      _("th", { "data-text-key": "PERFORMANCE" }, [
+                        _("text", "演技力"),
+                      ]),
+                    ]),
                   ]),
-                _("tbody", {}, [
-                  _("tr", { className: rowNumber++ % 2 ? "odd-row" : "" }, [
-                    _("td", { "data-text-key": "CALC_TABLE_FINAL_STAT" }, [
-                      _("text", "最終値"),
+                  _("tbody", {}, [
+                    _("tr", { className: rowNumber++ % 2 ? "odd-row" : "" }, [
+                      _("td", { "data-text-key": "CALC_TABLE_INITIAL" }, [
+                        _("text", "初期値"),
+                      ]),
+                      _("td", { className: "stat-value" }, [
+                        _("text", this.stat.initial[idx].vo),
+                      ]),
+                      _("td", { className: "stat-value" }, [
+                        _("text", this.stat.initial[idx].ex),
+                      ]),
+                      _("td", { className: "stat-value" }, [
+                        _("text", this.stat.initial[idx].co),
+                      ]),
+                      _("td", { className: "stat-value" }, [
+                        _("text", this.stat.initial[idx].total),
+                      ]),
                     ]),
-                    _("td", { className: "stat-value" }, [
-                      _("text", `${this.stat.final[idx].vo}`),
+                  ]),
+                  _(
+                    "tbody",
+                    {},
+                    [
+                      "CALC_TABLE_ALBUM",
+                      "CALC_TABLE_POSTER",
+                      "CALC_TABLE_ACCESSORY",
+                      "CALC_TABLE_ACTOR",
+                      "CALC_TABLE_OTHER",
+                    ].map((name, j) =>
+                      _("tr", { className: rowNumber++ % 2 ? "odd-row" : "" }, [
+                        _("td", { "data-text-key": name }, [_("text", name)]),
+                        _("td", { className: "stat-value" }, [
+                          _(
+                            "text",
+                            `${buffPercentageDisplay(this.stat, idx, j, StatBonus.Vocal)}\n+${this.stat.buffFinal[idx][j][1][StatBonus.Vocal]}\n${this.stat.bonus[idx][j].vo}`,
+                          ),
+                        ]),
+                        _("td", { className: "stat-value" }, [
+                          _(
+                            "text",
+                            `${buffPercentageDisplay(this.stat, idx, j, StatBonus.Expression)}\n+${this.stat.buffFinal[idx][j][1][StatBonus.Expression]}\n${this.stat.bonus[idx][j].ex}`,
+                          ),
+                        ]),
+                        _("td", { className: "stat-value" }, [
+                          _(
+                            "text",
+                            `${buffPercentageDisplay(this.stat, idx, j, StatBonus.Concentration)}\n+${this.stat.buffFinal[idx][j][1][StatBonus.Concentration]}\n${this.stat.bonus[idx][j].co}`,
+                          ),
+                        ]),
+                        _("td", { className: "stat-value" }, [
+                          _(
+                            "text",
+                            `${buffPercentageDisplay(this.stat, idx, j, StatBonus.Performance)}\n${this.stat.bonus[idx][j].total}`,
+                          ),
+                        ]),
+                      ]),
+                    ),
+                  ),
+                  _("tbody", {}, [
+                    _("tr", { className: rowNumber++ % 2 ? "odd-row" : "" }, [
+                      _("td", { "data-text-key": "CALC_TABLE_TOTAL_BONUS" }, [
+                        _("text", "上昇合計"),
+                      ]),
+                      _("td", { className: "stat-value" }, [
+                        _(
+                          "text",
+                          `${this.stat.buffFinal[idx][StatBonusType.Total][0][StatBonus.Vocal] / 100}%/${this.stat.buffLimit[idx][0][StatBonus.Vocal] / 100}%\n+${this.stat.buffFinal[idx][StatBonusType.Total][1][StatBonus.Vocal]}\n${this.stat.bonus[idx][StatBonusType.Total].vo}`,
+                        ),
+                      ]),
+                      _("td", { className: "stat-value" }, [
+                        _(
+                          "text",
+                          `${this.stat.buffFinal[idx][StatBonusType.Total][0][StatBonus.Expression] / 100}%/${this.stat.buffLimit[idx][0][StatBonus.Expression] / 100}%\n+${this.stat.buffFinal[idx][StatBonusType.Total][1][StatBonus.Expression]}\n${this.stat.bonus[idx][StatBonusType.Total].ex}`,
+                        ),
+                      ]),
+                      _("td", { className: "stat-value" }, [
+                        _(
+                          "text",
+                          `${this.stat.buffFinal[idx][StatBonusType.Total][0][StatBonus.Concentration] / 100}%/${this.stat.buffLimit[idx][0][StatBonus.Concentration] / 100}%\n+${this.stat.buffFinal[idx][StatBonusType.Total][1][StatBonus.Concentration]}\n${this.stat.bonus[idx][StatBonusType.Total].co}`,
+                        ),
+                      ]),
+                      _("td", { className: "stat-value" }, [
+                        _(
+                          "text",
+                          `${this.stat.buffFinal[idx][StatBonusType.Total][0][StatBonus.Performance] / 100}%/${this.stat.buffLimit[idx][0][StatBonus.Performance] / 100}%\n${this.stat.bonus[idx][StatBonusType.Total].total}`,
+                        ),
+                      ]),
                     ]),
-                    _("td", { className: "stat-value" }, [
-                      _("text", `${this.stat.final[idx].ex}`),
-                    ]),
-                    _("td", { className: "stat-value" }, [
-                      _("text", `${this.stat.final[idx].co}`),
-                    ]),
-                    _("td", { className: "stat-value" }, [
-                      _("text", `${this.stat.final[idx].total}`),
+                  ]),
+                  this.stat.buffAfterCalc[idx].every((i) => i.length === 0)
+                    ? new Comment("CALC_TABLE_EXTRA_UP")
+                    : _("tbody", {}, [
+                        _(
+                          "tr",
+                          { className: rowNumber++ % 2 ? "odd-row" : "" },
+                          [
+                            _(
+                              "td",
+                              { "data-text-key": "CALC_TABLE_EXTRA_UP" },
+                              [_("text", "额外加成")],
+                            ),
+                            _("td", { className: "stat-value" }, [
+                              _(
+                                "text",
+                                this.stat.buffAfterCalc[idx][StatBonus.Vocal]
+                                  .map((i) => `+${i / 100}%`)
+                                  .join("\n"),
+                              ),
+                            ]),
+                            _("td", { className: "stat-value" }, [
+                              _(
+                                "text",
+                                this.stat.buffAfterCalc[idx][
+                                  StatBonus.Expression
+                                ]
+                                  .map((i) => `+${i / 100}%`)
+                                  .join("\n"),
+                              ),
+                            ]),
+                            _("td", { className: "stat-value" }, [
+                              _(
+                                "text",
+                                this.stat.buffAfterCalc[idx][
+                                  StatBonus.Concentration
+                                ]
+                                  .map((i) => `+${i / 100}%`)
+                                  .join("\n"),
+                              ),
+                            ]),
+                            _("td", { className: "stat-value" }, [
+                              _(
+                                "text",
+                                this.stat.buffAfterCalc[idx][
+                                  StatBonus.Performance
+                                ]
+                                  .map((i) => `+${i / 100}%`)
+                                  .join("\n"),
+                              ),
+                            ]),
+                          ],
+                        ),
+                      ]),
+                  _("tbody", {}, [
+                    _("tr", { className: rowNumber++ % 2 ? "odd-row" : "" }, [
+                      _("td", { "data-text-key": "CALC_TABLE_FINAL_STAT" }, [
+                        _("text", "最終値"),
+                      ]),
+                      _("td", { className: "stat-value" }, [
+                        _("text", `${this.stat.final[idx].vo}`),
+                      ]),
+                      _("td", { className: "stat-value" }, [
+                        _("text", `${this.stat.final[idx].ex}`),
+                      ]),
+                      _("td", { className: "stat-value" }, [
+                        _("text", `${this.stat.final[idx].co}`),
+                      ]),
+                      _("td", { className: "stat-value" }, [
+                        _("text", `${this.stat.final[idx].total}`),
+                      ]),
                     ]),
                   ]),
                 ]),
-              ]),
-            ])
+              ])
         ),
       ),
     );
