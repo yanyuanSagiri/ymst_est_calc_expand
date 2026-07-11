@@ -536,6 +536,8 @@ export default class PartyManager {
     let leaderPosterIdx = -1;
     let isAutoPartyCalculating = false;
     let hasCompletedAutoPartyRun = false;
+    let isAutoPartyCancelled = false;
+    let activePythonRunCleanup = null;
 
     const saveState = () => {
       const data = {
@@ -559,9 +561,18 @@ export default class PartyManager {
       } catch (_) {}
     };
 
-    const stopAutoPartyProcesses = () => {
+    const stopAutoPartyProcesses = (markCancelled = true) => {
+      if (markCancelled) isAutoPartyCancelled = true;
+      if (activePythonRunCleanup) {
+        activePythonRunCleanup();
+        activePythonRunCleanup = null;
+      }
       if (root.stopAutoPartySearch) root.stopAutoPartySearch();
-      if (window.electronAPI?.stopFormation) window.electronAPI.stopFormation();
+      if (window.electronAPI?.stopFormation) {
+        window.electronAPI.stopFormation().catch((err) => {
+          console.warn("[PartyManager] stopFormation failed:", err);
+        });
+      }
       if (window.electronAPI?.removeFormationResultListener)
         window.electronAPI.removeFormationResultListener();
     };
@@ -1292,7 +1303,7 @@ export default class PartyManager {
     });
 
     const clearAutoPartyCalculationCache = () => {
-      stopAutoPartyProcesses();
+      stopAutoPartyProcesses(false);
       resultSection.style.display = "none";
       resultSection.innerHTML = "";
       progressFill.style.width = "0%";
@@ -1320,6 +1331,7 @@ export default class PartyManager {
         click: async () => {
           if (isAutoPartyCalculating) return;
           isAutoPartyCalculating = true;
+          isAutoPartyCancelled = false;
           hasCompletedAutoPartyRun = false;
           updateStartBtnState();
           clearAutoPartyCalculationCache();
@@ -1426,6 +1438,7 @@ export default class PartyManager {
                   };
 
                   const queueAccumulatedBatch = (force = false) => {
+                    if (isAutoPartyCancelled) return false;
                     if (pyAccum.length === 0) return false;
                     if (!force && batchQueue.length > 0) return false;
                     batchQueue.push(pyAccum.splice(0, pyAccum.length));
@@ -1477,70 +1490,103 @@ export default class PartyManager {
                     wakeBatchReader();
                   };
 
-                  window.electronAPI.onFormationResult((msg) => {
-                    if (msg.FIN) {
-                      console.log(`[PartyManager] FIN via IPC`);
-                      sendFIN();
-                    } else if (msg.error) {
-                      console.error(`[PartyManager] Python error:`, msg.error);
-                      sendFIN();
-                    } else if (!msg.error) {
-                      pyAccum.push(msg);
-                      pyTotalReceived++;
-                      if (pyAccum.length >= PY_BATCH_SIZE) {
-                        pausePythonOutput();
-                        queueAccumulatedBatch();
-                      }
-                    }
-                    if (pyTotalReceived % 5000 === 0) {
-                      progressText.textContent = `Python 接收中: ${pyTotalReceived.toLocaleString()} 个候选...`;
-                    }
-                  });
+                  const cleanupPythonQueues = () => {
+                    pyAccum.length = 0;
+                    batchQueue.length = 0;
+                    batchQueue.push(null);
+                    wakeBatchReader();
+                  };
+                  activePythonRunCleanup = cleanupPythonQueues;
 
-                  // runFormation 的 Promise 在进程关闭时 resolve，作为 FIN 兜底
-                  const formationDone = window.electronAPI
-                    .runFormation(userData)
-                    .then(() => {
-                      console.log(
-                        `[PartyManager] Python process closed, finReceived=${finReceived}`,
-                      );
-                      sendFIN();
-                    })
-                    .catch((err) => {
-                      console.error(
-                        `[PartyManager] Python process error:`,
-                        err,
-                      );
-                      sendFIN();
+                  try {
+                    window.electronAPI.onFormationResult((msg) => {
+                      if (isAutoPartyCancelled) return;
+                      if (msg.FIN) {
+                        console.log(`[PartyManager] FIN via IPC`);
+                        sendFIN();
+                      } else if (msg.error) {
+                        console.error(`[PartyManager] Python error:`, msg.error);
+                        sendFIN();
+                      } else if (!msg.error) {
+                        pyAccum.push(msg);
+                        pyTotalReceived++;
+                        if (pyAccum.length >= PY_BATCH_SIZE) {
+                          pausePythonOutput();
+                          queueAccumulatedBatch();
+                        }
+                      }
+                      if (pyTotalReceived % 5000 === 0) {
+                        progressText.textContent = `Python 接收中: ${pyTotalReceived.toLocaleString()} 个候选...`;
+                      }
                     });
 
-                  while (true) {
-                    while (batchQueue.length === 0) {
-                      await new Promise((r) => {
-                        resolveQueue = r;
+                    // runFormation 的 Promise 在进程关闭时 resolve，作为 FIN 兜底
+                    console.groupCollapsed("[PartyManager] Python runFormation input");
+                    console.log("counts:", {
+                      characters: userData.characters.length,
+                      posters: userData.posters.length,
+                      accessories: userData.accessories.length,
+                      characters_data: userData.characters_data.length,
+                      posters_ability_data: userData.posters_ability_data.length,
+                      effects_data: userData.effects_data.length,
+                    });
+                    console.log("userData:", userData);
+                    console.groupEnd();
+
+                    const formationDone = window.electronAPI
+                      .runFormation(userData)
+                      .then(() => {
+                        console.log(
+                          `[PartyManager] Python process closed, finReceived=${finReceived}`,
+                        );
+                        sendFIN();
+                      })
+                      .catch((err) => {
+                        console.error(
+                          `[PartyManager] Python process error:`,
+                          err,
+                        );
+                        sendFIN();
                       });
-                    }
-                    const batch = batchQueue.shift();
-                    if (batch === null) break;
-                    currentBatch++;
-                    console.log(
-                      `[PartyManager] 批次 ${currentBatch}: 候选数=${batch.length}`,
-                    );
-                    await processBatch(batch);
-                    if (batchQueue.length === 0) {
-                      if (pyAccum.length >= PY_BATCH_SIZE) {
-                        pausePythonOutput();
-                        queueAccumulatedBatch();
-                      } else {
-                        await resumePythonOutput();
+
+                    while (true) {
+                      while (batchQueue.length === 0) {
+                        await new Promise((r) => {
+                          resolveQueue = r;
+                        });
+                      }
+                      const batch = batchQueue.shift();
+                      if (batch === null || isAutoPartyCancelled) break;
+                      currentBatch++;
+                      console.log(
+                        `[PartyManager] 批次 ${currentBatch}: 候选数=${batch.length}`,
+                      );
+                      await processBatch(batch);
+                      if (batchQueue.length === 0) {
+                        if (pyAccum.length >= PY_BATCH_SIZE) {
+                          pausePythonOutput();
+                          queueAccumulatedBatch();
+                        } else {
+                          await resumePythonOutput();
+                        }
                       }
                     }
+
+                    await formationDone;
+                    if (!isAutoPartyCancelled) {
+                      console.log(
+                        `[PartyManager] Python 流式处理完成: 总候选数=${pyTotalReceived}, 总批次=${currentBatch}`,
+                      );
+                    }
+                  } finally {
+                    pyAccum.length = 0;
+                    batchQueue.length = 0;
+                    resolveQueue = null;
+                    if (activePythonRunCleanup === cleanupPythonQueues) {
+                      activePythonRunCleanup = null;
+                    }
+                    window.electronAPI.removeFormationResultListener();
                   }
-                  await formationDone;
-                  console.log(
-                    `[PartyManager] Python 流式处理完成: 总候选数=${pyTotalReceived}, 总批次=${currentBatch}`,
-                  );
-                  window.electronAPI.removeFormationResultListener();
                 },
                 onProgress: (progress) => {
                   const {
@@ -1582,7 +1628,7 @@ export default class PartyManager {
                 localStorage.setItem("autoPartyWorkerCount", workerCount);
                 localStorage.setItem("autoPartySAThreshold", saThreshold);
               } catch {}
-              const result = await root.handleAutoParty({
+              result = await root.handleAutoParty({
                 selChars,
                 selPosters,
                 selAccs,
@@ -1637,6 +1683,8 @@ export default class PartyManager {
                 },
               });
             }
+
+            if (isAutoPartyCancelled) return;
 
             if (result) {
               resultSection.style.display = "";

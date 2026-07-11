@@ -3,6 +3,7 @@ export default class AutoPartyWorkerPool {
     this.workers = [];
     this.isRunning = false;
     this.shouldStop = false;
+    this._settleCurrentRun = null;
   }
 
   async runSearch(params) {
@@ -10,6 +11,10 @@ export default class AutoPartyWorkerPool {
     const maxCores = navigator.hardwareConcurrency || 4;
     const defaultWorkerCount = Math.max(1, maxCores - 2);
     const workerCount = Math.max(1, Math.min(params.workerCount || defaultWorkerCount, maxCores));
+
+    if (this._settleCurrentRun) {
+      this._settleCurrentRun();
+    }
 
     // 终止旧 Worker
     for (const w of this.workers) {
@@ -42,6 +47,25 @@ export default class AutoPartyWorkerPool {
     let phase1EndTime = null;    // 第一阶段结束时间（所有 worker 进入 scoring）
 
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const buildResult = () => {
+        const searchEndTime = performance.now();
+        return {
+          bestScore,
+          bestIndices,
+          filterDuration: phase2StartTime ? (phase2StartTime - searchStartTime) : 0,
+          scoringDuration: phase2StartTime ? (searchEndTime - phase2StartTime) : (searchEndTime - searchStartTime),
+        };
+      };
+      const settleRun = () => {
+        if (settled) return;
+        settled = true;
+        this.isRunning = false;
+        this._settleCurrentRun = null;
+        resolve(buildResult());
+      };
+      this._settleCurrentRun = settleRun;
+
       for (let i = 0; i < workerCount; i++) {
         const worker = new Worker(
           new URL('./AutoPartyWorker.js', import.meta.url),
@@ -50,6 +74,7 @@ export default class AutoPartyWorkerPool {
         this.workers.push(worker);
 
         worker.onmessage = (e) => {
+          if (settled) return;
           const { type, data } = e.data;
 
           switch (type) {
@@ -140,14 +165,7 @@ export default class AutoPartyWorkerPool {
               console.log(`[Pool] Worker ${i} COMPLETE, ${completedWorkers}/${workerCount}, bestScore=${data.bestScore}`);
 
               if (completedWorkers === workerCount) {
-                this.isRunning = false;
-                const searchEndTime = performance.now();
-                resolve({
-                  bestScore,
-                  bestIndices,
-                  filterDuration: phase2StartTime ? (phase2StartTime - searchStartTime) : 0,
-                  scoringDuration: phase2StartTime ? (searchEndTime - phase2StartTime) : (searchEndTime - searchStartTime),
-                });
+                settleRun();
               }
               break;
             }
@@ -155,17 +173,11 @@ export default class AutoPartyWorkerPool {
         };
 
         worker.onerror = (err) => {
+          if (settled) return;
           console.error(`Worker ${i} error:`, err);
           completedWorkers++;
           if (completedWorkers === workerCount) {
-            this.isRunning = false;
-            const searchEndTime = performance.now();
-            resolve({
-              bestScore,
-              bestIndices,
-              filterDuration: phase2StartTime ? (phase2StartTime - searchStartTime) : 0,
-              scoringDuration: phase2StartTime ? (searchEndTime - phase2StartTime) : (searchEndTime - searchStartTime),
-            });
+            settleRun();
           }
         };
 
@@ -190,14 +202,18 @@ export default class AutoPartyWorkerPool {
   stop() {
     this.shouldStop = true;
     this.workers.forEach(worker => {
-      worker.postMessage({ type: 'STOP_SEARCH' });
+      try { worker.postMessage({ type: 'STOP_SEARCH' }); } catch (_) {}
     });
+    if (this._settleCurrentRun) {
+      this._settleCurrentRun();
+    }
     setTimeout(() => {
       this.workers.forEach(worker => {
         try { worker.terminate(); } catch (_) {}
       });
       this.workers = [];
       this.isRunning = false;
+      this._settleCurrentRun = null;
     }, 500);
   }
 
