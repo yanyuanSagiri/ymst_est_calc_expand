@@ -20,6 +20,7 @@ import ScoreCalculationType from "./ScoreCalculationType";
 import ScoreCalculator from "./ScoreCalculator";
 import MergedLiveSimulator from "./MergedLiveSimulator";
 import AutoPartyWorkerPool from "./AutoPartyWorkerPool";
+import { createAutoPartyPermutationPlan } from "./AutoPartyPermutationPlanner";
 import WebGPUStarActCounter from "./WebGPUStarActCounter";
 import LiveSimulator from "./LiveSimulator";
 import FilterManager from "../manager/FilterManager";
@@ -2468,13 +2469,14 @@ export default class RootLogic {
     selAccs,
     leader,
     leaderPoster,
+    constraints = null,
     useWebGPU = false,
     workerCount,
     saThreshold = 1,
     onProgress,
     onTotalReady,
   }) {
-    if (selChars.length < 4 || selPosters.length < 4 || selAccs.length < 5) {
+    if (selChars.length < 5 || selPosters.length < 5 || selAccs.length < 5) {
       alert("可选角色/海报/饰品数量不足，请增加候选项");
       return null;
     }
@@ -2483,6 +2485,37 @@ export default class RootLogic {
     const leaderPosterIdx = leaderPoster
       ? selPosters.indexOf(leaderPoster)
       : -1;
+    if (leaderIdx < 0) {
+      alert("请选择候选角色中的队长");
+      return null;
+    }
+    if (leaderPoster && leaderPosterIdx < 0) {
+      alert("指定的队长海报不在候选海报中");
+      return null;
+    }
+
+    const normalizeSlotIndex = (value) => {
+      const parsed = Number(value);
+      return Number.isInteger(parsed) ? parsed : -1;
+    };
+    const slotConstraints = {
+      mode: constraints?.mode === "advanced" ? "advanced" : "basic",
+      leaderPosition:
+        Number.isInteger(constraints?.leaderPosition) &&
+        constraints.leaderPosition >= 0 &&
+        constraints.leaderPosition < 5
+          ? constraints.leaderPosition
+          : -1,
+      characterSlots: new Array(5)
+        .fill(-1)
+        .map((_, i) => normalizeSlotIndex(constraints?.characterSlots?.[i])),
+      posterSlots: new Array(5)
+        .fill(-1)
+        .map((_, i) => normalizeSlotIndex(constraints?.posterSlots?.[i])),
+      accessorySlots: new Array(5)
+        .fill(-1)
+        .map((_, i) => normalizeSlotIndex(constraints?.accessorySlots?.[i])),
+    };
 
     const extra = {
       albumLevel: this.appState.albumLevel,
@@ -2557,40 +2590,15 @@ export default class RootLogic {
     // ===== WebGPU 预筛选：过滤完整组合（角色 × 海报 × 饰品）=====
     let filteredCombinations = null;
     let filterDuration = 0; // 候选筛选耗时 (ms)
-    let scoringDuration = 0; // 评分耗时 (ms)
-
-    // 海报排列有效性检查（与 AutoPartyWorker 中相同的逻辑）
-    const isPosterPermValid = (posterPerm, lpIdx, allPosters) => {
-      const usedRestrictGroups = new Set();
-      if (lpIdx >= 0) {
-        const leaderRestrictId =
-          allPosters[lpIdx]?.data?.OrganizeRestrictGroupId;
-        if (leaderRestrictId) usedRestrictGroups.add(leaderRestrictId);
-      }
-      for (let i = 0; i < posterPerm.length; i++) {
-        const idx = posterPerm[i];
-        if (idx < 0) continue;
-        const restrictId = allPosters[idx]?.data?.OrganizeRestrictGroupId;
-        if (restrictId) {
-          if (usedRestrictGroups.has(restrictId)) return false;
-          usedRestrictGroups.add(restrictId);
-        }
-      }
-      return true;
-    };
-
-    const posterIndices = selPosters
-      .map((_, i) => i)
-      .filter((i) => i !== leaderPosterIdx);
-    const posterSlots = leaderPosterIdx === -1 ? 5 : 4;
 
     if (useWebGPU && selChars.length >= 5) {
       const filterStart = performance.now();
+      let gpuCounter = null;
       try {
         console.log(
           "autoParty: attempting WebGPU full-combination pre-filter...",
         );
-        const gpuCounter = new WebGPUStarActCounter();
+        gpuCounter = new WebGPUStarActCounter();
         const gpuOk = await gpuCounter.init();
         if (gpuOk) {
           // 计算队伍属性（用于分支选择）
@@ -2671,66 +2679,33 @@ export default class RootLogic {
                 ? leader.staract.data.ConditionValue1
                 : 5;
 
-            // 生成排列池
-            let charPerms = WebGPUStarActCounter.generatePermutations(
-              selChars.length,
-              5,
-            ).filter((perm) => perm.includes(leaderIdx));
-            if (filterDuplicateCharacterBase) {
-              const before = charPerms.length;
-              charPerms = charPerms.filter((perm) => {
-                const usedBaseIds = new Set();
-                for (const idx of perm) {
-                  const baseId = characterBaseIds[idx];
-                  if (usedBaseIds.has(baseId)) return false;
-                  usedBaseIds.add(baseId);
-                }
-                return true;
-              });
-              console.log(
-                `autoParty: filtered duplicate CharacterBase permutations ${before.toLocaleString()} -> ${charPerms.length.toLocaleString()}`,
-              );
-            }
-            const posterPermIndices = WebGPUStarActCounter.generatePermutations(
-              posterIndices.length,
-              posterSlots,
-            );
-            // 映射为 selPosters 中的实际索引
-            const allPosterPerms = posterPermIndices.map((perm) =>
-              perm.map((i) => posterIndices[i]),
-            );
-            // 过滤无效海报排列
-            const validPosterPerms = allPosterPerms.filter((pp) =>
-              isPosterPermValid(pp, leaderPosterIdx, selPosters),
-            );
-            const accPerms = WebGPUStarActCounter.generatePermutations(
-              selAccs.length,
-              5,
-            );
+            const gpuPlan = createAutoPartyPermutationPlan({
+              characterCount: selChars.length,
+              posterCount: selPosters.length,
+              accessoryCount: selAccs.length,
+              leaderIdx,
+              leaderPosterIdx,
+              constraints: slotConstraints,
+              characterBaseIds,
+              posterRestrictGroupIds: selPosters.map(
+                (p) => p.data.OrganizeRestrictGroupId || 0,
+              ),
+            });
 
-            if (
-              charPerms.length > 0 &&
-              validPosterPerms.length > 0 &&
-              accPerms.length > 0
-            ) {
-              const totalCombos =
-                charPerms.length * validPosterPerms.length * accPerms.length;
+            if (gpuPlan.totalCombinations > 0) {
               console.log(
-                `autoParty: WebGPU evaluating ${totalCombos.toLocaleString()} full combinations (${charPerms.length} × ${validPosterPerms.length} × ${accPerms.length})`,
+                `autoParty: WebGPU evaluating ${gpuPlan.totalCombinations.toLocaleString()} constrained combinations in ${gpuPlan.groups.length} leader-position groups`,
               );
 
-              const gpuResult = await gpuCounter.computeFilteredPools(
+              const gpuResult = await gpuCounter.computeFilteredPoolGroups(
                 {
                   timeline,
                   charDataPool: charLightParams,
                   posterDataPool: posterLightEffects,
                   accDataPool: accLightEffects,
-                  charPerms,
-                  posterPerms: validPosterPerms,
-                  accPerms,
-                  posterSlots,
+                  groups: gpuPlan.groups,
+                  accessoryPermutations: gpuPlan.accessoryPermutations,
                   leaderCharIdx: leaderIdx,
-                  leaderPosterIdx: leaderPosterIdx >= 0 ? leaderPosterIdx : -1,
                   starActReq: starActReqs,
                   stockType,
                 },
@@ -2741,119 +2716,19 @@ export default class RootLogic {
                 `autoParty: WebGPU filtered to ${gpuResult.candidates.length} candidates (max starActCount: ${gpuResult.maxCount}, threshold: ${gpuResult.threshold})`,
               );
 
-              // 诊断：输出 max 组合的具体名称
-              if (gpuResult.maxCount > 0) {
-                const maxC = gpuResult.maxCombo;
-                if (maxC) {
-                  const cp = charPerms[maxC.cpIdx];
-                  const pp = validPosterPerms[maxC.ppIdx];
-                  const ap = accPerms[maxC.apIdx];
-                  const leaderPos = cp.indexOf(leaderIdx);
-                  const fullPoster = [];
-                  let ppI = 0;
-                  for (let i = 0; i < 5; i++) {
-                    if (i === leaderPos && leaderPosterIdx >= 0)
-                      fullPoster.push(leaderPosterIdx);
-                    else fullPoster.push(pp[ppI++]);
-                  }
-                  console.log(
-                    `[MAX COMBO NAMES] starActCount=${gpuResult.maxCount}:`,
-                  );
-                  for (let i = 0; i < 5; i++) {
-                    const ch = selChars[cp[i]];
-                    const po = selPosters[fullPoster[i]];
-                    const ac = selAccs[ap[i]];
-                    const charName =
-                      ch?.fullCardName ||
-                      ch?.cardName ||
-                      ch?.data?.Name ||
-                      `char[${cp[i]}]`;
-                    const posterName =
-                      po?.fullPosterName ||
-                      po?.data?.Name ||
-                      `poster[${fullPoster[i]}]`;
-                    const accName =
-                      ac?.fullAccessoryName ||
-                      ac?.data?.Name ||
-                      `acc[${ap[i]}]`;
-                    const senseInfo =
-                      ch?.senseAll
-                        ?.map(
-                          (s) =>
-                            `${s.Type}(${s.data?.LightCount || 0},CT${s.ct})`,
-                        )
-                        .join("/") || "";
-                    // 输出海报/饰品灯光效果（现在是 entry 数组格式）
-                    const fieldNames = [
-                      "selfLightBonus",
-                      "extraLightSupport",
-                      "extraLightControl",
-                      "extraLightAmplification",
-                      "extraLightSpecial",
-                      "extraLightVariable",
-                      "decreaseReq0",
-                      "decreaseReq1",
-                      "decreaseReq2",
-                      "decreaseReq3",
-                      "recastDown",
-                    ];
-                    const triggerNames = [
-                      "none",
-                      "Company",
-                      "Attribute",
-                      "SenseType",
-                      "CharacterBase",
-                    ];
-                    const pEff = LiveSimulator.collectPosterLightEffects(
-                      po,
-                      teamContext,
-                    );
-                    const aEff = LiveSimulator.collectAccessoryLightEffects(ac);
-                    const pEffStr = pEff
-                      .map(
-                        (e) =>
-                          `${fieldNames[e.field] || "f" + e.field}=${e.value}${e.triggerType > 0 ? `(${triggerNames[e.triggerType] || "T" + e.triggerType}=${e.triggerValue})` : ""}`,
-                      )
-                      .join(", ");
-                    const aEffStr = aEff
-                      .map(
-                        (e) =>
-                          `${fieldNames[e.field] || "f" + e.field}=${e.value}${e.triggerType > 0 ? `(${triggerNames[e.triggerType] || "T" + e.triggerType}=${e.triggerValue})` : ""}`,
-                      )
-                      .join(", ");
-                    console.log(
-                      `  pos${i}: ${charName} / ${posterName} / ${accName}`,
-                    );
-                    console.log(`    Senses: ${senseInfo}`);
-                    if (pEffStr) console.log(`    PosterEff: ${pEffStr}`);
-                    if (aEffStr) console.log(`    AccEff: ${aEffStr}`);
-                  }
-                }
-              }
-
-              // 构建完整组合数据（映射回原始索引）
-              filteredCombinations = gpuResult.candidates.map((c) => {
-                const cp = charPerms[c.cpIdx];
-                const pp = validPosterPerms[c.ppIdx];
-                const ap = accPerms[c.apIdx];
-
-                // 构建完整 5 位置海报排列（队长海报插入队长位置）
-                const leaderPos = cp.indexOf(leaderIdx);
-                const fullPoster = [];
-                let ppI = 0;
-                for (let i = 0; i < 5; i++) {
-                  if (i === leaderPos && leaderPosterIdx >= 0) {
-                    fullPoster.push(leaderPosterIdx);
-                  } else {
-                    fullPoster.push(pp[ppI++]);
-                  }
-                }
-
-                return { charPerm: cp, posterPerm: fullPoster, accPerm: ap };
+              filteredCombinations = gpuResult.candidates.map((candidate) => {
+                const group = gpuPlan.groups[candidate.groupIdx];
+                return {
+                  charPerm:
+                    group.characterPermutations[candidate.cpIdx].slice(),
+                  posterPerm:
+                    group.posterPermutations[candidate.ppIdx].slice(),
+                  accPerm:
+                    gpuPlan.accessoryPermutations[candidate.apIdx].slice(),
+                };
               });
             }
 
-            gpuCounter.destroy();
           }
         } else {
           console.log("autoParty: WebGPU not available, falling back to CPU");
@@ -2863,26 +2738,20 @@ export default class RootLogic {
           "autoParty: WebGPU pre-filter failed, falling back to CPU:",
           err,
         );
+      } finally {
+        try {
+          gpuCounter?.destroy();
+        } catch (err) {
+          console.warn("autoParty: failed to release WebGPU resources:", err);
+        }
       }
       filterDuration = performance.now() - filterStart;
     }
 
-    // 计算总组合数（GPU 筛选后使用实际候选数，否则使用理论总数）
-    let totalCombinations;
-    if (filteredCombinations) {
-      totalCombinations = filteredCombinations.length;
-    } else {
-      const charPermCount = AutoPartyWorkerPool.permCount(selChars.length, 5);
-      const posterPermCount = AutoPartyWorkerPool.permCount(
-        posterIndices.length,
-        posterSlots,
-      );
-      const accPermCount = AutoPartyWorkerPool.permCount(selAccs.length, 5);
-      totalCombinations = charPermCount * posterPermCount * accPermCount;
-    }
+    // CPU 模式的准确组合数由 Worker 构建约束计划后通过 PLAN_READY 回报。
+    const totalCombinations = filteredCombinations?.length || 0;
 
-    // 通知 UI 实际遍历次数
-    if (onTotalReady) {
+    if (filteredCombinations && onTotalReady) {
       onTotalReady(totalCombinations, !!filteredCombinations);
     }
 
@@ -2893,7 +2762,6 @@ export default class RootLogic {
 
     this._autoPartyWorkerPool = new AutoPartyWorkerPool();
 
-    const scoringStart = performance.now();
     try {
       const result = await this._autoPartyWorkerPool.runSearch({
         precise: true,
@@ -2912,8 +2780,10 @@ export default class RootLogic {
         totalCombinations,
         workerCount,
         saThreshold,
+        constraints: slotConstraints,
         filterDuplicateCharacterBase,
         onProgress,
+        onTotalReady: filteredCombinations ? null : onTotalReady,
         filteredCombinations,
       });
 

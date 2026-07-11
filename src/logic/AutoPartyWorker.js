@@ -14,6 +14,10 @@ import GameDb from "../db/GameDb.js";
 import CharacterStarRankData from "../character/CharacterStarRankData.js";
 import StarActData from "../character/StarActData.js";
 import TheaterLevelData from "../manager/TheaterLevelData.js";
+import {
+  createAutoPartyPermutationPlan,
+  resolveAutoPartyCombination,
+} from "./AutoPartyPermutationPlanner.js";
 
 ConstText.language = "zh";
 
@@ -218,10 +222,12 @@ async function runSearch(params) {
   };
 
   // GPU 预筛选的完整组合
-  const filterDuplicateCharacterBase = !!params.filterDuplicateCharacterBase;
-  const characterBaseIds = filterDuplicateCharacterBase
-    ? selChars.map((c) => c.data.CharacterBaseMasterId)
-    : null;
+  const characterBaseIds = selChars.map(
+    (c) => c.data.CharacterBaseMasterId,
+  );
+  const posterRestrictGroupIds = selPosters.map(
+    (p) => p.data?.OrganizeRestrictGroupId ?? 0,
+  );
 
   let bestScore = -1;
   let bestIndices = null;
@@ -406,82 +412,29 @@ async function runSearch(params) {
     });
   } else {
     // ===== CPU 模式：两阶段筛选 =====
-    const charPerms = [];
-    const permuteChars = (arr, current, usedBaseIds = null) => {
-      if (current.length === 5) {
-        charPerms.push(current);
-        return;
-      }
-      for (let i = 0; i < arr.length; i++) {
-        const idx = arr[i];
-        if (filterDuplicateCharacterBase) {
-          const baseId = characterBaseIds[idx];
-          if (usedBaseIds.has(baseId)) continue;
-          usedBaseIds.add(baseId);
-          permuteChars(
-            arr.filter((_, j) => j !== i),
-            [...current, idx],
-            usedBaseIds,
-          );
-          usedBaseIds.delete(baseId);
-        } else {
-          permuteChars(
-            arr.filter((_, j) => j !== i),
-            [...current, idx],
-          );
-        }
-      }
-    };
-    permuteChars(
-      selChars.map((_, i) => i),
-      [],
-      filterDuplicateCharacterBase ? new Set() : null,
-    );
+    const plan = createAutoPartyPermutationPlan({
+      characterCount: selChars.length,
+      posterCount: selPosters.length,
+      accessoryCount: selAccs.length,
+      leaderIdx,
+      leaderPosterIdx,
+      constraints: params.constraints,
+      characterBaseIds,
+      posterRestrictGroupIds,
+    });
 
-    const posterIndices = selPosters
-      .map((_, i) => i)
-      .filter((i) => i !== leaderPosterIdx);
-    const posterSlots = leaderPosterIdx === -1 ? 5 : 4;
-    const posterPerms = [];
-    const permutePosters = (arr, current) => {
-      if (current.length === posterSlots) {
-        posterPerms.push(current);
-        return;
-      }
-      for (let i = 0; i < arr.length; i++)
-        permutePosters(
-          arr.filter((_, j) => j !== i),
-          [...current, arr[i]],
-        );
-    };
-    permutePosters(posterIndices, []);
-
-    const accPerms = [];
-    const permuteAccs = (arr, current) => {
-      if (current.length === 5) {
-        accPerms.push(current);
-        return;
-      }
-      for (let i = 0; i < arr.length; i++)
-        permuteAccs(
-          arr.filter((_, j) => j !== i),
-          [...current, arr[i]],
-        );
-    };
-    permuteAccs(
-      selAccs.map((_, i) => i),
-      [],
-    );
-
-    const total = charPerms.length * posterPerms.length * accPerms.length;
+    const total = plan.totalCombinations;
+    self.postMessage({
+      type: "PLAN_READY",
+      data: { totalCombinations: total },
+    });
     const chunkSize = Math.ceil(total / totalWorkers);
-    const startIdx = workerId * chunkSize;
+    const startIdx = Math.min(workerId * chunkSize, total);
     const endIdx = Math.min(startIdx + chunkSize, total);
 
     console.log(`Worker ${workerId}: CPU two-phase mode`, {
-      charPerms: charPerms.length,
-      posterPerms: posterPerms.length,
-      accPerms: accPerms.length,
+      groups: plan.groups.length,
+      accessoryPermutations: plan.accessoryPermutations.length,
       total,
       chunkStart: startIdx,
       chunkEnd: endIdx,
@@ -491,26 +444,14 @@ async function runSearch(params) {
     const candidates = [];
 
     for (let i = startIdx; i < endIdx && !STATE.shouldStop; i++) {
-      const cpIdx = Math.floor(i / (posterPerms.length * accPerms.length));
-      const remaining = i % (posterPerms.length * accPerms.length);
-      const ppIdx = Math.floor(remaining / accPerms.length);
-      const acIdx = remaining % accPerms.length;
-
-      const cp = charPerms[cpIdx];
-      const pp = posterPerms[ppIdx];
-      const ap = accPerms[acIdx];
-
-      if (!isPosterPermValid(pp, leaderPosterIdx, selPosters)) {
-        count++;
-        continue;
-      }
+      const combination = resolveAutoPartyCombination(plan, i);
+      const cp = combination.charPerm;
+      const pp = combination.posterPerm;
+      const ap = combination.accPerm;
 
       const members = cp.map((j) => selChars[j]);
-      const leaderPos = cp.indexOf(leaderIdx);
+      const leaderPos = combination.leaderPosition;
       const posters = pp.map((j) => selPosters[j]);
-      if (leaderPosterIdx >= 0) {
-        posters.splice(leaderPos, 0, selPosters[leaderPosterIdx]);
-      }
       const accessories = ap.map((j) => selAccs[j]);
 
       try {
@@ -532,9 +473,7 @@ async function runSearch(params) {
 
         candidates.push({
           starActCount,
-          charPerm: cp,
-          posterPerm: pp,
-          accPerm: ap,
+          index: i,
         });
       } catch (err) {
         errorCount++;
@@ -560,6 +499,17 @@ async function runSearch(params) {
     }
 
     // 报告 maxSA 给 pool，等待全局阈值
+    self.postMessage({
+      type: "PROGRESS",
+      data: {
+        current: count,
+        total: endIdx - startIdx,
+        bestScore: 0,
+        errorCount,
+        phase: "counting",
+      },
+    });
+
     const localMaxSA = candidates.reduce(
       (m, c) => Math.max(m, c.starActCount),
       0,
@@ -579,19 +529,18 @@ async function runSearch(params) {
     );
 
     count = 0;
+    lastReportTime = Date.now();
     for (const candidate of filtered) {
       if (STATE.shouldStop) break;
 
-      const cp = candidate.charPerm;
-      const pp = candidate.posterPerm;
-      const ap = candidate.accPerm;
+      const combination = resolveAutoPartyCombination(plan, candidate.index);
+      const cp = combination.charPerm;
+      const pp = combination.posterPerm;
+      const ap = combination.accPerm;
 
       const members = cp.map((j) => selChars[j]);
-      const leaderPos = cp.indexOf(leaderIdx);
+      const leaderPos = combination.leaderPosition;
       const posters = pp.map((j) => selPosters[j]);
-      if (leaderPosterIdx >= 0) {
-        posters.splice(leaderPos, 0, selPosters[leaderPosterIdx]);
-      }
       const accessories = ap.map((j) => selAccs[j]);
 
       try {
@@ -620,20 +569,10 @@ async function runSearch(params) {
 
           if (totalScore > bestScore) {
             bestScore = totalScore;
-            // 构建完整 5 元素海报索引（包含队长海报）
-            const fullPosterIndices = [];
-            let ppI2 = 0;
-            for (let pi = 0; pi < 5; pi++) {
-              if (pi === leaderPos && leaderPosterIdx >= 0) {
-                fullPosterIndices.push(leaderPosterIdx);
-              } else {
-                fullPosterIndices.push(pp[ppI2++]);
-              }
-            }
             bestIndices = {
-              charIndices: cp,
-              posterIndices: fullPosterIndices,
-              accIndices: ap,
+              charIndices: [...cp],
+              posterIndices: [...pp],
+              accIndices: [...ap],
             };
           }
         }
@@ -643,17 +582,31 @@ async function runSearch(params) {
       }
 
       count++;
-      self.postMessage({
-        type: "PROGRESS",
-        data: {
-          current: count,
-          total: filtered.length,
-          bestScore,
-          errorCount,
-          phase: "scoring",
-        },
-      });
+      const now = Date.now();
+      if (now - lastReportTime > 200) {
+        self.postMessage({
+          type: "PROGRESS",
+          data: {
+            current: count,
+            total: filtered.length,
+            bestScore,
+            errorCount,
+            phase: "scoring",
+          },
+        });
+        lastReportTime = now;
+      }
     }
+    self.postMessage({
+      type: "PROGRESS",
+      data: {
+        current: count,
+        total: filtered.length,
+        bestScore,
+        errorCount,
+        phase: "scoring",
+      },
+    });
   }
 
   console.log(`Worker ${workerId}: precise search done`, {
@@ -673,23 +626,4 @@ async function runSearch(params) {
     },
   });
   STATE.isRunning = false;
-}
-
-function isPosterPermValid(posterPerm, leaderPosterIdx, allPosters) {
-  const usedRestrictGroups = new Set();
-  if (leaderPosterIdx >= 0) {
-    const leaderRestrictId =
-      allPosters[leaderPosterIdx]?.data?.OrganizeRestrictGroupId;
-    if (leaderRestrictId) usedRestrictGroups.add(leaderRestrictId);
-  }
-  for (let i = 0; i < posterPerm.length; i++) {
-    const idx = posterPerm[i];
-    if (idx < 0) continue;
-    const restrictId = allPosters[idx]?.data?.OrganizeRestrictGroupId;
-    if (restrictId) {
-      if (usedRestrictGroups.has(restrictId)) return false;
-      usedRestrictGroups.add(restrictId);
-    }
-  }
-  return true;
 }

@@ -7,7 +7,7 @@ export default class AutoPartyWorkerPool {
   }
 
   async runSearch(params) {
-    const { onProgress, saThreshold = 1 } = params;
+    const { onProgress, onTotalReady, saThreshold = 1 } = params;
     const maxCores = navigator.hardwareConcurrency || 4;
     const defaultWorkerCount = Math.max(1, maxCores - 2);
     const workerCount = Math.max(1, Math.min(params.workerCount || defaultWorkerCount, maxCores));
@@ -18,7 +18,11 @@ export default class AutoPartyWorkerPool {
 
     // 终止旧 Worker
     for (const w of this.workers) {
-      try { w.terminate(); } catch (_) {}
+      try {
+        w.terminate();
+      } catch {
+        // The worker may already have terminated.
+      }
     }
     this.isRunning = true;
     this.shouldStop = false;
@@ -26,6 +30,7 @@ export default class AutoPartyWorkerPool {
     console.log(`[Pool] runSearch: workerCount=${workerCount}, comboData=${params.comboData ? params.comboData.length : 'N/A'}`);
 
     let completedWorkers = 0;
+    let totalReadyNotified = false;
     const workerProgresses = new Array(workerCount).fill(0);
     const workerPhases = new Array(workerCount).fill('counting');
     const workerPhase1Totals = new Array(workerCount).fill(0);
@@ -37,6 +42,8 @@ export default class AutoPartyWorkerPool {
 
     // CPU 两阶段协调：收集各 worker 的 maxSA，广播全局阈值
     const workerMaxSAs = new Array(workerCount).fill(0);
+    const workerPhase1Finished = new Array(workerCount).fill(false);
+    const workerCompleted = new Array(workerCount).fill(false);
     let phase1DoneCount = 0;
     let thresholdBroadcast = false;
 
@@ -44,7 +51,6 @@ export default class AutoPartyWorkerPool {
     const searchStartTime = performance.now();
     let phase2StartTime = null;  // 第二阶段开始时间（首个 worker 进入 scoring）
     let allWorkersInPhase2 = false;
-    let phase1EndTime = null;    // 第一阶段结束时间（所有 worker 进入 scoring）
 
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -66,6 +72,41 @@ export default class AutoPartyWorkerPool {
       };
       this._settleCurrentRun = settleRun;
 
+      const markPhase1Done = (workerIndex, maxSA = 0) => {
+        if (workerPhase1Finished[workerIndex]) return;
+        workerPhase1Finished[workerIndex] = true;
+        workerMaxSAs[workerIndex] = maxSA;
+        phase1DoneCount++;
+        console.log(
+          `[Pool] Worker ${workerIndex} phase 1 settled, ${phase1DoneCount}/${workerCount}`,
+        );
+        if (phase1DoneCount === workerCount && !thresholdBroadcast) {
+          thresholdBroadcast = true;
+          const globalMaxSA = Math.max(...workerMaxSAs);
+          const globalThreshold = Math.max(0, globalMaxSA - saThreshold);
+          console.log(
+            `autoParty: CPU threshold=${globalThreshold} (maxSA=${globalMaxSA}, offset=${saThreshold})`,
+          );
+          for (const activeWorker of this.workers) {
+            try {
+              activeWorker.postMessage({
+                type: 'GLOBAL_THRESHOLD',
+                data: { threshold: globalThreshold },
+              });
+            } catch (err) {
+              console.warn('[Pool] Failed to broadcast threshold:', err);
+            }
+          }
+        }
+      };
+
+      const markWorkerComplete = (workerIndex) => {
+        if (workerCompleted[workerIndex]) return false;
+        workerCompleted[workerIndex] = true;
+        completedWorkers++;
+        return true;
+      };
+
       for (let i = 0; i < workerCount; i++) {
         const worker = new Worker(
           new URL('./AutoPartyWorker.js', import.meta.url),
@@ -78,8 +119,16 @@ export default class AutoPartyWorkerPool {
           const { type, data } = e.data;
 
           switch (type) {
+            case 'PLAN_READY': {
+              if (!totalReadyNotified) {
+                totalReadyNotified = true;
+                if (typeof onTotalReady === 'function') {
+                  onTotalReady(data.totalCombinations, false);
+                }
+              }
+              break;
+            }
             case 'PROGRESS': {
-              const prevPhase = workerPhases[i];
               workerPhases[i] = data.phase || 'counting';
               workerProgresses[i] = data.current;
               if (data.phase === 'counting') {
@@ -92,7 +141,6 @@ export default class AutoPartyWorkerPool {
               // 检测所有 worker 是否都进入第二阶段
               if (!allWorkersInPhase2 && workerPhases.every(p => p === 'scoring')) {
                 allWorkersInPhase2 = true;
-                phase1EndTime = performance.now();
               }
               // 聚合全局最高分
               if (data.bestScore > globalBestScore) {
@@ -142,26 +190,18 @@ export default class AutoPartyWorkerPool {
               break;
             }
             case 'PHASE1_DONE': {
-              workerMaxSAs[i] = data.maxSA || 0;
-              phase1DoneCount++;
-              console.log(`[Pool] Worker ${i} PHASE1_DONE, ${phase1DoneCount}/${workerCount}`);
-              if (phase1DoneCount === workerCount && !thresholdBroadcast) {
-                thresholdBroadcast = true;
-                const globalMaxSA = Math.max(...workerMaxSAs);
-                const globalThreshold = Math.max(0, globalMaxSA - saThreshold);
-                console.log(`autoParty: CPU threshold=${globalThreshold} (maxSA=${globalMaxSA}, offset=${saThreshold})`);
-                for (const w of this.workers) {
-                  w.postMessage({ type: 'GLOBAL_THRESHOLD', data: { threshold: globalThreshold } });
-                }
-              }
+              markPhase1Done(i, data.maxSA || 0);
               break;
             }
             case 'COMPLETE': {
+              // A worker can fail before PHASE1_DONE. Count it as settled so
+              // the remaining workers still receive their global threshold.
+              markPhase1Done(i, 0);
               if (data.bestScore > bestScore) {
                 bestScore = data.bestScore;
                 bestIndices = data.bestIndices;
               }
-              completedWorkers++;
+              if (!markWorkerComplete(i)) break;
               console.log(`[Pool] Worker ${i} COMPLETE, ${completedWorkers}/${workerCount}, bestScore=${data.bestScore}`);
 
               if (completedWorkers === workerCount) {
@@ -175,13 +215,22 @@ export default class AutoPartyWorkerPool {
         worker.onerror = (err) => {
           if (settled) return;
           console.error(`Worker ${i} error:`, err);
-          completedWorkers++;
+          markPhase1Done(i, 0);
+          if (!markWorkerComplete(i)) return;
           if (completedWorkers === workerCount) {
             settleRun();
           }
         };
 
-        const { onProgress: _op, onWorkerProgress: _owp, totalCombinations: _tc, comboData, ...workerData } = params;
+        const { comboData } = params;
+        const workerData = Object.fromEntries(
+          Object.entries(params).filter(
+            ([key, value]) =>
+              key !== 'comboData' &&
+              key !== 'totalCombinations' &&
+              typeof value !== 'function',
+          ),
+        );
         const msg = {
           type: 'START_SEARCH',
           data: {
@@ -201,19 +250,28 @@ export default class AutoPartyWorkerPool {
 
   stop() {
     this.shouldStop = true;
-    this.workers.forEach(worker => {
-      try { worker.postMessage({ type: 'STOP_SEARCH' }); } catch (_) {}
+    const stoppedWorkers = this.workers.slice();
+    this.workers = [];
+    stoppedWorkers.forEach(worker => {
+      try {
+        worker.postMessage({ type: 'STOP_SEARCH' });
+      } catch {
+        // The worker may already have terminated.
+      }
     });
     if (this._settleCurrentRun) {
       this._settleCurrentRun();
+    } else {
+      this.isRunning = false;
     }
     setTimeout(() => {
-      this.workers.forEach(worker => {
-        try { worker.terminate(); } catch (_) {}
+      stoppedWorkers.forEach(worker => {
+        try {
+          worker.terminate();
+        } catch {
+          // The worker may already have terminated.
+        }
       });
-      this.workers = [];
-      this.isRunning = false;
-      this._settleCurrentRun = null;
     }, 500);
   }
 

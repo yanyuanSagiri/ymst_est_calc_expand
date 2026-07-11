@@ -509,11 +509,15 @@ export default class PartyManager {
     const savedAccs = new Map();
     let savedLeaderId = null;
     let savedLeaderPosterId = null;
+    let savedMode = "basic";
+    let savedAdvancedState = null;
+    let hasSavedState = false;
 
     try {
       const raw = localStorage.getItem("autoPartyState");
       if (raw) {
         const data = JSON.parse(raw);
+        hasSavedState = true;
         (data.chars || []).forEach((id) => savedChars.add(id));
         (data.posters || []).forEach((id) => savedPosters.add(id));
         (data.accs || []).forEach((item) => {
@@ -526,14 +530,102 @@ export default class PartyManager {
         });
         savedLeaderId = data.leaderId ?? null;
         savedLeaderPosterId = data.leaderPosterId ?? null;
+        if (data.version >= 2) {
+          savedMode = data.mode === "advanced" ? "advanced" : "basic";
+          savedAdvancedState = data.advanced || null;
+        }
       }
-    } catch (_) {}
+    } catch {
+      hasSavedState = false;
+    }
+
+    const serializeInventoryItem = (item) => {
+      if (!item) return null;
+      try {
+        return typeof item.toJSON === "function" ? item.toJSON() : item.data;
+      } catch {
+        return item.data || null;
+      }
+    };
+    const serializedItemEquals = (item, data) => {
+      if (!item || data == null) return false;
+      try {
+        return JSON.stringify(serializeInventoryItem(item)) === JSON.stringify(data);
+      } catch {
+        return false;
+      }
+    };
+    const createInventoryRef = (item, inventory) => {
+      if (!item) return null;
+      return {
+        index: inventory.indexOf(item),
+        data: serializeInventoryItem(item),
+      };
+    };
+    const restoreInventoryRef = (ref, inventory, eligibleItems) => {
+      if (!ref) return -1;
+      const storedIndex = Number.isInteger(ref.index)
+        ? ref.index
+        : Number.isInteger(ref.inventoryIndex)
+          ? ref.inventoryIndex
+          : -1;
+      if (storedIndex >= 0) {
+        const indexedItem = inventory[storedIndex];
+        if (
+          eligibleItems.includes(indexedItem) &&
+          (ref.data == null || serializedItemEquals(indexedItem, ref.data))
+        ) {
+          return eligibleItems.indexOf(indexedItem);
+        }
+      }
+      if (ref.data != null) {
+        return eligibleItems.findIndex((item) =>
+          serializedItemEquals(item, ref.data),
+        );
+      }
+      return -1;
+    };
 
     const selectedChars = [];
     const selectedPosters = [];
     const selectedAccs = [];
+    let autoPartyMode = savedMode;
     let leaderIdx = 0;
     let leaderPosterIdx = -1;
+    let advancedLeaderIdx = restoreInventoryRef(
+      savedAdvancedState?.leader,
+      root.appState.characters,
+      characters,
+    );
+    let advancedLeaderPosterIdx = restoreInventoryRef(
+      savedAdvancedState?.leaderPoster,
+      root.appState.posters,
+      posters,
+    );
+    let advancedLeaderPosition = [-1, 0, 1, 2, 3, 4].includes(
+      savedAdvancedState?.leaderPosition,
+    )
+      ? savedAdvancedState.leaderPosition
+      : -1;
+    const restoreAdvancedSlots = (refs, inventory, eligibleItems) =>
+      Array.from({ length: 5 }, (_, idx) =>
+        restoreInventoryRef(refs?.[idx], inventory, eligibleItems),
+      );
+    const advancedCharacterSlots = restoreAdvancedSlots(
+      savedAdvancedState?.characterSlots,
+      root.appState.characters,
+      characters,
+    );
+    const advancedPosterSlots = restoreAdvancedSlots(
+      savedAdvancedState?.posterSlots,
+      root.appState.posters,
+      posters,
+    );
+    const advancedAccessorySlots = restoreAdvancedSlots(
+      savedAdvancedState?.accessorySlots,
+      root.appState.accessories,
+      accessories,
+    );
     let isAutoPartyCalculating = false;
     let hasCompletedAutoPartyRun = false;
     let isAutoPartyCancelled = false;
@@ -541,6 +633,8 @@ export default class PartyManager {
 
     const saveState = () => {
       const data = {
+        version: 2,
+        mode: autoPartyMode,
         chars: characters
           .filter((_, i) => selectedChars[i])
           .map((c) => c.data.Id),
@@ -555,10 +649,32 @@ export default class PartyManager {
           leaderPosterIdx >= 0
             ? (posters[leaderPosterIdx]?.data.Id ?? null)
             : null,
+        advanced: {
+          leader: createInventoryRef(
+            characters[advancedLeaderIdx],
+            root.appState.characters,
+          ),
+          leaderPoster: createInventoryRef(
+            posters[advancedLeaderPosterIdx],
+            root.appState.posters,
+          ),
+          leaderPosition: advancedLeaderPosition,
+          characterSlots: advancedCharacterSlots.map((idx) =>
+            createInventoryRef(characters[idx], root.appState.characters),
+          ),
+          posterSlots: advancedPosterSlots.map((idx) =>
+            createInventoryRef(posters[idx], root.appState.posters),
+          ),
+          accessorySlots: advancedAccessorySlots.map((idx) =>
+            createInventoryRef(accessories[idx], root.appState.accessories),
+          ),
+        },
       };
       try {
         localStorage.setItem("autoPartyState", JSON.stringify(data));
-      } catch (_) {}
+      } catch {
+        // localStorage may be unavailable in private or restricted contexts.
+      }
     };
 
     const stopAutoPartyProcesses = (markCancelled = true) => {
@@ -677,6 +793,63 @@ export default class PartyManager {
       ],
     );
 
+    let refreshAdvancedOptions = () => {};
+    let cleanupAdvancedReferences = () => {};
+    let updateAutoPartyMode = () => {};
+    let updateEstimate = () => {};
+    let updateStartBtnState = () => {};
+
+    const modeSection = _("div", {
+      style: {
+        marginBottom: "15px",
+        padding: "10px",
+        background: "#eef5ff",
+        borderRadius: "4px",
+      },
+    });
+    modeSection.appendChild(
+      _("div", { style: { fontWeight: "bold", marginBottom: "8px" } }, [
+        _("text", "配队设置模式"),
+      ]),
+    );
+    const modeRadioName = `auto-party-mode-${Date.now()}`;
+    const basicModeRadio = _("input", {
+      type: "radio",
+      name: modeRadioName,
+      value: "basic",
+      event: {
+        change: () => {
+          if (!basicModeRadio.checked) return;
+          autoPartyMode = "basic";
+          updateAutoPartyMode();
+          updateEstimate();
+          saveState();
+        },
+      },
+    });
+    const advancedModeRadio = _("input", {
+      type: "radio",
+      name: modeRadioName,
+      value: "advanced",
+      event: {
+        change: () => {
+          if (!advancedModeRadio.checked) return;
+          autoPartyMode = "advanced";
+          updateAutoPartyMode();
+          updateEstimate();
+          saveState();
+        },
+      },
+    });
+    basicModeRadio.checked = autoPartyMode === "basic";
+    advancedModeRadio.checked = autoPartyMode === "advanced";
+    modeSection.appendChild(
+      _("div", { style: { display: "flex", gap: "24px" } }, [
+        _("label", {}, [basicModeRadio, _("text", " 基础设置")]),
+        _("label", {}, [advancedModeRadio, _("text", " 进阶设置")]),
+      ]),
+    );
+
     const leaderSection = _("div", {
       style: {
         marginBottom: "15px",
@@ -687,7 +860,7 @@ export default class PartyManager {
     });
     leaderSection.appendChild(
       _("div", { style: { fontWeight: "bold", marginBottom: "8px" } }, [
-        _("text", "队长设置"),
+        _("text", "基础设置"),
       ]),
     );
 
@@ -749,6 +922,536 @@ export default class PartyManager {
       ]),
     );
 
+    const advancedSection = _("div", {
+      style: {
+        display: "none",
+        marginBottom: "15px",
+        padding: "10px",
+        background: "#f8f4ff",
+        borderRadius: "4px",
+      },
+    });
+    advancedSection.appendChild(
+      _("div", { style: { fontWeight: "bold", marginBottom: "8px" } }, [
+        _("text", "进阶设置"),
+      ]),
+    );
+    const advancedLeaderSelect = _("select", {
+      style: { width: "100%", marginBottom: "8px" },
+      event: {
+        change: (e) => {
+          advancedLeaderIdx = parseInt(e.target.value);
+          if (!Number.isInteger(advancedLeaderIdx) || advancedLeaderIdx < 0) {
+            advancedLeaderIdx = -1;
+            advancedLeaderPosition = -1;
+          } else {
+            const leaderBaseId =
+              characters[advancedLeaderIdx]?.data.CharacterBaseMasterId;
+            advancedCharacterSlots.forEach((idx, position) => {
+              if (
+                idx >= 0 &&
+                characters[idx]?.data.CharacterBaseMasterId === leaderBaseId
+              ) {
+                advancedCharacterSlots[position] = -1;
+              }
+            });
+          }
+          if (advancedLeaderPosition >= 0) {
+            advancedCharacterSlots[advancedLeaderPosition] = -1;
+          }
+          refreshAdvancedOptions();
+          updateEstimate();
+          saveState();
+        },
+      },
+    });
+    const advancedLeaderPosterSelect = _("select", {
+      style: { width: "100%" },
+      event: {
+        change: (e) => {
+          advancedLeaderPosterIdx = parseInt(e.target.value);
+          if (
+            !Number.isInteger(advancedLeaderPosterIdx) ||
+            advancedLeaderPosterIdx < 0
+          ) {
+            advancedLeaderPosterIdx = -1;
+          } else {
+            const leaderPoster = posters[advancedLeaderPosterIdx];
+            const restrictId = leaderPoster?.data.OrganizeRestrictGroupId;
+            advancedPosterSlots.forEach((idx, position) => {
+              const fixedPoster = posters[idx];
+              if (
+                fixedPoster === leaderPoster ||
+                (restrictId &&
+                  fixedPoster?.data.OrganizeRestrictGroupId === restrictId)
+              ) {
+                advancedPosterSlots[position] = -1;
+              }
+            });
+          }
+          if (
+            advancedLeaderPosterIdx >= 0 &&
+            advancedLeaderPosition >= 0
+          ) {
+            advancedPosterSlots[advancedLeaderPosition] = -1;
+          }
+          refreshAdvancedOptions();
+          updateEstimate();
+          saveState();
+        },
+      },
+    });
+    advancedSection.appendChild(
+      _("div", {}, [_("text", "队长: "), advancedLeaderSelect]),
+    );
+    advancedSection.appendChild(
+      _("div", { style: { marginTop: "8px" } }, [
+        _("text", "跟随队长海报: "),
+        advancedLeaderPosterSelect,
+      ]),
+    );
+
+    const leaderPositionContainer = _("div", {
+      style: { marginTop: "10px", marginBottom: "10px" },
+    });
+    leaderPositionContainer.appendChild(
+      _("div", { style: { fontWeight: "bold", marginBottom: "4px" } }, [
+        _("text", "队长位置"),
+      ]),
+    );
+    const advancedLeaderPositionInputs = [];
+    const leaderPositionRadioName = `auto-party-leader-position-${Date.now()}`;
+    const createLeaderPositionRadio = (position) => {
+      const radio = _("input", {
+        type: "radio",
+        name: leaderPositionRadioName,
+        value: position,
+        event: {
+          change: () => {
+            if (!radio.checked) return;
+            advancedLeaderPosition = position;
+            if (position >= 0) {
+              advancedCharacterSlots[position] = -1;
+              if (advancedLeaderPosterIdx >= 0) {
+                advancedPosterSlots[position] = -1;
+              }
+            }
+            refreshAdvancedOptions();
+            updateEstimate();
+            saveState();
+          },
+        },
+      });
+      radio.checked = advancedLeaderPosition === position;
+      return radio;
+    };
+    const automaticLeaderPositionRadio = createLeaderPositionRadio(-1);
+    advancedLeaderPositionInputs.push(automaticLeaderPositionRadio);
+    leaderPositionContainer.appendChild(
+      _("label", {}, [
+        automaticLeaderPositionRadio,
+        _("text", " 位置自动"),
+      ]),
+    );
+    advancedSection.appendChild(leaderPositionContainer);
+
+    const advancedSlotIcons = {
+      character: [],
+      poster: [],
+      accessory: [],
+    };
+    const advancedSlotsByType = {
+      character: advancedCharacterSlots,
+      poster: advancedPosterSlots,
+      accessory: advancedAccessorySlots,
+    };
+    const advancedSlotMeta = {
+      character: {
+        items: characters,
+        selected: selectedChars,
+        label: "角色",
+        spriteClass: "spriteatlas-characters",
+        iconId: (item) => item.cardIconId,
+        name: (item) => item.fullCardName,
+      },
+      poster: {
+        items: posters,
+        selected: selectedPosters,
+        label: "海报",
+        spriteClass: "spriteatlas-posters",
+        iconId: (item) => item.id,
+        name: (item) => item.fullPosterName,
+      },
+      accessory: {
+        items: accessories,
+        selected: selectedAccs,
+        label: "饰品",
+        spriteClass: "spriteatlas-accessories",
+        iconId: (item) => item.id,
+        name: (item) => item.fullAccessoryName,
+      },
+    };
+    const setAdvancedSlot = (type, position, value) => {
+      const slots = advancedSlotsByType[type];
+      const items = advancedSlotMeta[type].items;
+      const parsedValue = parseInt(value);
+      if (!Number.isInteger(parsedValue) || parsedValue < 0) {
+        slots[position] = -1;
+      } else {
+        slots.forEach((idx, otherPosition) => {
+          if (otherPosition === position || idx < 0) return;
+          let conflicts = idx === parsedValue;
+          if (type === "character") {
+            conflicts =
+              conflicts ||
+              items[idx]?.data.CharacterBaseMasterId ===
+                items[parsedValue]?.data.CharacterBaseMasterId;
+          } else if (type === "poster") {
+            const restrictId = items[parsedValue]?.data.OrganizeRestrictGroupId;
+            conflicts =
+              conflicts ||
+              (restrictId &&
+                restrictId === items[idx]?.data.OrganizeRestrictGroupId);
+          }
+          if (conflicts) slots[otherPosition] = -1;
+        });
+        slots[position] = parsedValue;
+      }
+      refreshAdvancedOptions();
+      updateEstimate();
+      saveState();
+    };
+
+    const getAdvancedSlotConflict = (type, candidateIdx) => {
+      if (type === "character" && advancedLeaderIdx >= 0) {
+        const candidateBaseId =
+          characters[candidateIdx]?.data.CharacterBaseMasterId;
+        const leaderBaseId =
+          characters[advancedLeaderIdx]?.data.CharacterBaseMasterId;
+        if (leaderBaseId != null && candidateBaseId === leaderBaseId) {
+          return "与当前队长使用同一主角色";
+        }
+      }
+      if (type === "poster" && advancedLeaderPosterIdx >= 0) {
+        const candidate = posters[candidateIdx];
+        const leaderPoster = posters[advancedLeaderPosterIdx];
+        const leaderRestrictId = leaderPoster?.data.OrganizeRestrictGroupId;
+        if (
+          candidate === leaderPoster ||
+          (leaderRestrictId &&
+            candidate?.data.OrganizeRestrictGroupId === leaderRestrictId)
+        ) {
+          return "与当前队长海报冲突";
+        }
+      }
+      return null;
+    };
+
+    const isAdvancedDerivedSlot = (type, position) =>
+      (type === "character" &&
+        advancedLeaderIdx >= 0 &&
+        advancedLeaderPosition === position) ||
+      (type === "poster" &&
+        advancedLeaderPosterIdx >= 0 &&
+        advancedLeaderPosition === position);
+
+    const openAdvancedSlotPicker = (type, position) => {
+      if (isAdvancedDerivedSlot(type, position)) return;
+      const meta = advancedSlotMeta[type];
+      const slots = advancedSlotsByType[type];
+      const pickerOverlay = _("div", {
+        className: "picking-overlay",
+        style: { zIndex: 10002 },
+      });
+      const pickerContainer = _("div", { className: "picking-container" });
+      const closePicker = () => {
+        document.body.classList.remove("picking");
+        pickerOverlay.remove();
+      };
+      pickerOverlay.addEventListener("click", (e) => {
+        if (e.target === pickerOverlay) closePicker();
+      });
+      pickerContainer.appendChild(
+        _(
+          "div",
+          {
+            style: {
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              marginBottom: "10px",
+            },
+          },
+          [
+            _("strong", {}, [
+              _("text", `选择${position + 1}号位固定${meta.label}`),
+            ]),
+            _("input", {
+              type: "button",
+              value: "关闭",
+              event: { click: closePicker },
+            }),
+          ],
+        ),
+      );
+      pickerContainer.appendChild(
+        _(
+          "div",
+          { style: { color: "#666", fontSize: "12px", marginBottom: "8px" } },
+          [_("text", "仅显示当前已勾选的候选；选择已固定项会将其移动到这里。")],
+        ),
+      );
+
+      const chooseCandidate = (candidateIdx) => {
+        setAdvancedSlot(type, position, candidateIdx);
+        closePicker();
+      };
+      const emptyOption = _(
+        "span",
+        {
+          className: `list-icon-container small-text${type === "poster" ? " arial" : ""}`,
+          title: "不固定",
+          style: { cursor: "pointer" },
+          event: { click: () => chooseCandidate(-1) },
+        },
+        [
+          _("span", {
+            className: `${meta.spriteClass} empty-icon`,
+            "data-id": "",
+            style: { marginLeft: 0 },
+          }),
+          _("br"),
+          _("span", {}, [_("text", "不固定")]),
+        ],
+      );
+      if (slots[position] < 0) emptyOption.classList.add("selected");
+      pickerContainer.appendChild(emptyOption);
+
+      meta.items.forEach((item, candidateIdx) => {
+        if (!meta.selected[candidateIdx]) return;
+        const option = item.iconNode.cloneNode(true);
+        option.classList.remove("selected");
+        option
+          .querySelectorAll("input.icon-selection")
+          .forEach((input) => input.remove());
+        if (slots[position] === candidateIdx) option.classList.add("selected");
+        const conflict = getAdvancedSlotConflict(type, candidateIdx);
+        option.title = conflict
+          ? `${meta.name(item)}（${conflict}）`
+          : meta.name(item);
+        if (conflict) {
+          option.style.cursor = "not-allowed";
+          option.style.opacity = "0.35";
+        } else {
+          option.style.cursor = "pointer";
+          option.addEventListener("click", () =>
+            chooseCandidate(candidateIdx),
+          );
+        }
+        pickerContainer.appendChild(option);
+      });
+
+      pickerOverlay.appendChild(pickerContainer);
+      document.body.classList.add("picking");
+      document.body.appendChild(pickerOverlay);
+      pickerOverlay.scrollTop = 0;
+    };
+
+    const advancedSlotsGrid = _("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "90px repeat(3, minmax(90px, 1fr))",
+        gap: "8px",
+        alignItems: "center",
+      },
+    });
+    ["队长 / 位置", "固定角色", "固定海报", "固定饰品"].forEach((label) => {
+      advancedSlotsGrid.appendChild(
+        _("div", { style: { fontWeight: "bold", textAlign: "center" } }, [_("text", label)]),
+      );
+    });
+    for (let position = 0; position < 5; position++) {
+      const leaderPositionRadio = createLeaderPositionRadio(position);
+      advancedLeaderPositionInputs.push(leaderPositionRadio);
+      const rowChildren = [
+        _("label", { style: { fontWeight: "bold" } }, [
+          leaderPositionRadio,
+          _("text", ` ${position + 1}号位`),
+        ]),
+      ];
+      ["character", "poster", "accessory"].forEach((type) => {
+        const meta = advancedSlotMeta[type];
+        const icon = _("span", {
+          className: meta.spriteClass,
+          "data-id": "",
+          role: "button",
+          tabindex: 0,
+          title: `不固定${meta.label}，点击选择`,
+          style: {
+            justifySelf: "center",
+            marginLeft: 0,
+            cursor: "pointer",
+          },
+          event: {
+            click: () => openAdvancedSlotPicker(type, position),
+            keydown: (e) => {
+              if (e.key !== "Enter" && e.key !== " ") return;
+              e.preventDefault();
+              openAdvancedSlotPicker(type, position);
+            },
+          },
+        });
+        advancedSlotIcons[type][position] = icon;
+        rowChildren.push(icon);
+      });
+      advancedSlotsGrid.appendChild(
+        _(
+          "div",
+          { className: "party-member", style: { display: "contents" } },
+          rowChildren,
+        ),
+      );
+    }
+    advancedSection.appendChild(advancedSlotsGrid);
+    advancedSection.appendChild(
+      _(
+        "div",
+        { style: { marginTop: "6px", color: "#666", fontSize: "12px" } },
+        [_("text", "点击图标选择固定项；虚线空槽表示不固定，蓝色高亮槽跟随队长。")],
+      ),
+    );
+    const clearAdvancedBtn = _("input", {
+      type: "button",
+      value: "清空进阶设置",
+      style: { marginTop: "10px" },
+      event: {
+        click: () => {
+          advancedLeaderIdx = -1;
+          advancedLeaderPosterIdx = -1;
+          advancedLeaderPosition = -1;
+          advancedCharacterSlots.fill(-1);
+          advancedPosterSlots.fill(-1);
+          advancedAccessorySlots.fill(-1);
+          refreshAdvancedOptions();
+          updateEstimate();
+          saveState();
+        },
+      },
+    });
+    advancedSection.appendChild(clearAdvancedBtn);
+
+    cleanupAdvancedReferences = () => {
+      if (advancedLeaderIdx < 0 || !selectedChars[advancedLeaderIdx]) {
+        advancedLeaderIdx = -1;
+        advancedLeaderPosition = -1;
+      }
+      if (
+        advancedLeaderPosterIdx < 0 ||
+        !selectedPosters[advancedLeaderPosterIdx]
+      ) {
+        advancedLeaderPosterIdx = -1;
+      }
+      advancedCharacterSlots.forEach((idx, position) => {
+        if (idx < 0 || !selectedChars[idx]) advancedCharacterSlots[position] = -1;
+      });
+      advancedPosterSlots.forEach((idx, position) => {
+        if (idx < 0 || !selectedPosters[idx]) advancedPosterSlots[position] = -1;
+      });
+      advancedAccessorySlots.forEach((idx, position) => {
+        if (idx < 0 || !selectedAccs[idx]) advancedAccessorySlots[position] = -1;
+      });
+    };
+
+    const addSelectOption = (select, value, label, disabled = false) => {
+      const attributes = { value };
+      if (disabled) attributes.disabled = true;
+      select.appendChild(
+        _("option", attributes, [_("text", label)]),
+      );
+    };
+    const updateAdvancedSlotIcon = (type, position) => {
+      const meta = advancedSlotMeta[type];
+      const icon = advancedSlotIcons[type][position];
+      const derived = isAdvancedDerivedSlot(type, position);
+      let itemIdx = advancedSlotsByType[type][position];
+      let stateLabel = "不固定";
+      if (derived) {
+        itemIdx =
+          type === "character"
+            ? advancedLeaderIdx
+            : advancedLeaderPosterIdx;
+      }
+      const item = itemIdx >= 0 ? meta.items[itemIdx] : null;
+      icon.dataset.id = item ? meta.iconId(item) : "";
+      if (item) {
+        stateLabel = derived
+          ? `${type === "character" ? "队长" : "队长海报"}：${meta.name(item)}`
+          : `固定：${meta.name(item)}`;
+      }
+      icon.title = `${position + 1}号位${meta.label} - ${stateLabel}${
+        derived ? "（跟随队长位置）" : "（点击选择）"
+      }`;
+      icon.setAttribute("aria-label", icon.title);
+      icon.style.cursor = derived ? "not-allowed" : "pointer";
+      icon.style.opacity = derived ? "0.85" : "1";
+      icon.style.borderRadius = "10px";
+      icon.style.boxShadow = derived
+        ? "0 0 0 3px rgba(33, 150, 243, 0.45)"
+        : item
+          ? "0 0 0 2px rgba(63, 81, 181, 0.25)"
+          : "";
+      if (derived) {
+        icon.setAttribute("aria-disabled", "true");
+        icon.setAttribute("tabindex", "-1");
+      } else {
+        icon.removeAttribute("aria-disabled");
+        icon.setAttribute("tabindex", "0");
+      }
+    };
+    refreshAdvancedOptions = () => {
+      cleanupAdvancedReferences();
+
+      removeAllChilds(advancedLeaderSelect);
+      addSelectOption(advancedLeaderSelect, -1, "（请选择队长）");
+      characters.forEach((character, idx) => {
+        if (!selectedChars[idx]) return;
+        addSelectOption(
+          advancedLeaderSelect,
+          idx,
+          character.fullCardName,
+        );
+      });
+      advancedLeaderSelect.value = String(advancedLeaderIdx);
+
+      removeAllChilds(advancedLeaderPosterSelect);
+      addSelectOption(
+        advancedLeaderPosterSelect,
+        -1,
+        "（自动选择最优海报）",
+      );
+      posters.forEach((poster, idx) => {
+        if (!selectedPosters[idx]) return;
+        addSelectOption(
+          advancedLeaderPosterSelect,
+          idx,
+          poster.fullPosterName,
+        );
+      });
+      advancedLeaderPosterSelect.value = String(advancedLeaderPosterIdx);
+
+      advancedLeaderPositionInputs.forEach((radio, inputIdx) => {
+        const position = inputIdx - 1;
+        radio.checked = advancedLeaderPosition === position;
+        radio.disabled = position >= 0 && advancedLeaderIdx < 0;
+      });
+
+      for (let position = 0; position < 5; position++) {
+        updateAdvancedSlotIcon("character", position);
+        updateAdvancedSlotIcon("poster", position);
+        updateAdvancedSlotIcon("accessory", position);
+      }
+    };
+
     const estInfo = _("div", {
       style: {
         marginBottom: "15px",
@@ -759,6 +1462,16 @@ export default class PartyManager {
     });
     const estText = _("span", {}, [_("text", "预估遍历次数: 计算中...")]);
     estInfo.appendChild(estText);
+    const validationText = _("div", {
+      style: {
+        display: "none",
+        marginTop: "6px",
+        color: "#c62828",
+        fontSize: "12px",
+        whiteSpace: "pre-wrap",
+      },
+    });
+    estInfo.appendChild(validationText);
 
     // Worker 数量设置
     const maxCores = navigator.hardwareConcurrency || 4;
@@ -801,7 +1514,9 @@ export default class PartyManager {
           e.target.value = count;
           try {
             localStorage.setItem("autoPartyWorkerCount", count);
-          } catch {}
+          } catch {
+            // Keep the in-memory value when localStorage is unavailable.
+          }
         },
       },
     });
@@ -959,33 +1674,328 @@ export default class PartyManager {
         _("text", " 使用 Python 脚本计算最优配队（仅 Electron 环境可用）"),
       ]),
     );
+    const pythonAdvancedNote = _(
+      "div",
+      {
+        style: {
+          display: "none",
+          marginTop: "6px",
+          color: "#c62828",
+          fontSize: "12px",
+        },
+      },
+      [_("text", "进阶设置暂不支持 Python 配队")],
+    );
+    pythonSection.appendChild(pythonAdvancedNote);
+
+    updateAutoPartyMode = () => {
+      const isAdvanced = autoPartyMode === "advanced";
+      basicModeRadio.checked = !isAdvanced;
+      advancedModeRadio.checked = isAdvanced;
+      leaderSection.style.display = isAdvanced ? "none" : "";
+      advancedSection.style.display = isAdvanced ? "" : "none";
+      if (isAdvanced) pythonCheckbox.checked = false;
+      pythonCheckbox.disabled = isAdvanced;
+      pythonAdvancedNote.style.display = isAdvanced ? "" : "none";
+      if (isAdvanced) refreshAdvancedOptions();
+    };
+
     const perm = (n, k) =>
       n < k
         ? 0
         : Array.from({ length: k }, (_, i) => n - i).reduce((a, b) => a * b, 1);
 
-    const updateEstimate = () => {
+    const getMaxCompatiblePosterCount = (
+      selectedIndexes,
+      usedIndexes = new Set(),
+      usedRestrictIds = new Set(),
+    ) => {
+      let unrestrictedCount = 0;
+      const availableRestrictIds = new Set();
+      selectedIndexes.forEach((idx) => {
+        if (usedIndexes.has(idx)) return;
+        const restrictId = posters[idx]?.data.OrganizeRestrictGroupId;
+        if (restrictId) {
+          if (!usedRestrictIds.has(restrictId)) {
+            availableRestrictIds.add(restrictId);
+          }
+        } else {
+          unrestrictedCount++;
+        }
+      });
+      return unrestrictedCount + availableRestrictIds.size;
+    };
+
+    const getAutoPartyValidation = () => {
       const charCount = selectedChars.filter(Boolean).length;
       const posterCount = selectedPosters.filter(Boolean).length;
       const accCount = selectedAccs.filter(Boolean).length;
-      const posterPool = leaderPosterIdx >= 0 ? posterCount - 1 : posterCount;
-      const charComb = perm(charCount, 5);
-      const posterSlots = leaderPosterIdx === -1 ? 5 : 4;
-      const posterComb = perm(posterPool, posterSlots);
-      const accComb = perm(accCount, 5);
-      const total = charComb * posterComb * accComb;
-      estText.textContent = `预估遍历次数: ${total.toLocaleString()} (角色${charComb} × 海报${posterComb} × 饰品${accComb})`;
+      const selectedCharIndexes = selectedChars
+        .map((selected, idx) => (selected ? idx : -1))
+        .filter((idx) => idx >= 0);
+      const selectedPosterIndexes = selectedPosters
+        .map((selected, idx) => (selected ? idx : -1))
+        .filter((idx) => idx >= 0);
+      const selectedAccessoryIndexes = selectedAccs
+        .map((selected, idx) => (selected ? idx : -1))
+        .filter((idx) => idx >= 0);
+      const errors = [];
+
+      if (autoPartyMode === "basic") {
+        if (leaderIdx < 0 || !selectedChars[leaderIdx]) {
+          errors.push("请选择一个已勾选的队长");
+        }
+        if (leaderPosterIdx >= 0 && !selectedPosters[leaderPosterIdx]) {
+          errors.push("队长海报已不在候选池中");
+        }
+        const leaderBaseId = characters[leaderIdx]?.data.CharacterBaseMasterId;
+        const availableCharacterBaseIds = new Set(
+          selectedCharIndexes
+            .filter((idx) => idx !== leaderIdx)
+            .map((idx) => characters[idx]?.data.CharacterBaseMasterId)
+            .filter((baseId) => baseId !== leaderBaseId),
+        );
+        if (availableCharacterBaseIds.size < 4) {
+          errors.push(`可用角色不足（还需 ${4 - availableCharacterBaseIds.size} 个不同角色）`);
+        }
+        const usedPosterIndexes = new Set();
+        const usedPosterRestrictIds = new Set();
+        if (leaderPosterIdx >= 0) {
+          usedPosterIndexes.add(leaderPosterIdx);
+          const restrictId =
+            posters[leaderPosterIdx]?.data.OrganizeRestrictGroupId;
+          if (restrictId) usedPosterRestrictIds.add(restrictId);
+        }
+        const posterRemaining = leaderPosterIdx >= 0 ? 4 : 5;
+        const compatiblePosterCount = getMaxCompatiblePosterCount(
+          selectedPosterIndexes,
+          usedPosterIndexes,
+          usedPosterRestrictIds,
+        );
+        if (compatiblePosterCount < posterRemaining) {
+          errors.push(`可用海报不足（还需 ${posterRemaining - compatiblePosterCount} 张无冲突海报）`);
+        }
+        if (accCount < 5) errors.push(`可用饰品不足（${accCount}/5）`);
+
+        const posterPool = Math.max(
+          0,
+          posterCount - (leaderPosterIdx >= 0 ? 1 : 0),
+        );
+        const charComb = perm(charCount, 5);
+        const posterOpenSlots = leaderPosterIdx >= 0 ? 4 : 5;
+        const posterComb = perm(posterPool, posterOpenSlots);
+        const accComb = perm(accCount, 5);
+        return {
+          errors,
+          charComb,
+          posterComb,
+          accComb,
+          leaderPositionCount: 1,
+          remainingText: "角色5、海报5、饰品5",
+        };
+      }
+
+      if (advancedLeaderIdx < 0 || !selectedChars[advancedLeaderIdx]) {
+        errors.push("进阶设置必须选择队长");
+      }
+      if (
+        advancedLeaderPosterIdx >= 0 &&
+        !selectedPosters[advancedLeaderPosterIdx]
+      ) {
+        errors.push("跟随队长海报已不在候选池中");
+      }
+
+      const fixedCharacterIndexes = [];
+      const usedCharacterIndexes = new Set();
+      const usedCharacterBaseIds = new Set();
+      advancedCharacterSlots.forEach((idx, position) => {
+        if (idx < 0) return;
+        if (!selectedChars[idx]) {
+          errors.push(`${position + 1}号位固定角色已不在候选池中`);
+          return;
+        }
+        const baseId = characters[idx]?.data.CharacterBaseMasterId;
+        if (usedCharacterIndexes.has(idx)) {
+          errors.push("固定角色存在重复库存对象");
+        }
+        if (usedCharacterBaseIds.has(baseId)) {
+          errors.push("固定角色存在相同主角色冲突");
+        }
+        usedCharacterIndexes.add(idx);
+        usedCharacterBaseIds.add(baseId);
+        fixedCharacterIndexes.push(idx);
+      });
+      const leaderBaseId =
+        characters[advancedLeaderIdx]?.data.CharacterBaseMasterId;
+      if (leaderBaseId != null && usedCharacterBaseIds.has(leaderBaseId)) {
+        errors.push("固定角色不能与队长使用同一主角色");
+      }
+
+      const fixedPosterIndexes = [];
+      const usedPosterIndexes = new Set();
+      const usedPosterRestrictIds = new Set();
+      advancedPosterSlots.forEach((idx, position) => {
+        if (idx < 0) return;
+        if (!selectedPosters[idx]) {
+          errors.push(`${position + 1}号位固定海报已不在候选池中`);
+          return;
+        }
+        const restrictId = posters[idx]?.data.OrganizeRestrictGroupId;
+        if (usedPosterIndexes.has(idx)) {
+          errors.push("固定海报存在重复库存对象");
+        }
+        if (restrictId && usedPosterRestrictIds.has(restrictId)) {
+          errors.push("固定海报存在限制组冲突");
+        }
+        usedPosterIndexes.add(idx);
+        if (restrictId) usedPosterRestrictIds.add(restrictId);
+        fixedPosterIndexes.push(idx);
+      });
+      if (advancedLeaderPosterIdx >= 0) {
+        const restrictId =
+          posters[advancedLeaderPosterIdx]?.data.OrganizeRestrictGroupId;
+        if (usedPosterIndexes.has(advancedLeaderPosterIdx)) {
+          errors.push("队长海报不能再固定到其他位置");
+        }
+        if (restrictId && usedPosterRestrictIds.has(restrictId)) {
+          errors.push("队长海报与固定海报存在限制组冲突");
+        }
+        usedPosterIndexes.add(advancedLeaderPosterIdx);
+        if (restrictId) usedPosterRestrictIds.add(restrictId);
+      }
+
+      const fixedAccessoryIndexes = [];
+      const usedAccessoryIndexes = new Set();
+      advancedAccessorySlots.forEach((idx, position) => {
+        if (idx < 0) return;
+        if (!selectedAccs[idx]) {
+          errors.push(`${position + 1}号位固定饰品已不在候选池中`);
+          return;
+        }
+        if (usedAccessoryIndexes.has(idx)) {
+          errors.push("固定饰品存在重复库存对象");
+        }
+        usedAccessoryIndexes.add(idx);
+        fixedAccessoryIndexes.push(idx);
+      });
+
+      let legalLeaderPositions = [];
+      if (advancedLeaderPosition >= 0) {
+        if (advancedCharacterSlots[advancedLeaderPosition] >= 0) {
+          errors.push("队长位置与固定角色冲突");
+        }
+        if (
+          advancedLeaderPosterIdx >= 0 &&
+          advancedPosterSlots[advancedLeaderPosition] >= 0
+        ) {
+          errors.push("队长海报与固定海报位置冲突");
+        }
+        if (
+          advancedCharacterSlots[advancedLeaderPosition] < 0 &&
+          (advancedLeaderPosterIdx < 0 ||
+            advancedPosterSlots[advancedLeaderPosition] < 0)
+        ) {
+          legalLeaderPositions = [advancedLeaderPosition];
+        }
+      } else {
+        legalLeaderPositions = Array.from({ length: 5 }, (_, idx) => idx).filter(
+          (position) =>
+            advancedCharacterSlots[position] < 0 &&
+            (advancedLeaderPosterIdx < 0 ||
+              advancedPosterSlots[position] < 0),
+        );
+      }
+      if (legalLeaderPositions.length === 0) {
+        errors.push("队长或队长海报没有合法位置");
+      }
+
+      const characterOpenSlots = Math.max(0, 4 - fixedCharacterIndexes.length);
+      const unavailableCharacterBaseIds = new Set(usedCharacterBaseIds);
+      if (leaderBaseId != null) unavailableCharacterBaseIds.add(leaderBaseId);
+      const availableCharacterIndexes = selectedCharIndexes.filter(
+        (idx) =>
+          !usedCharacterIndexes.has(idx) &&
+          !unavailableCharacterBaseIds.has(
+            characters[idx]?.data.CharacterBaseMasterId,
+          ),
+      );
+      const availableCharacterBaseIds = new Set(
+        availableCharacterIndexes.map(
+          (idx) => characters[idx]?.data.CharacterBaseMasterId,
+        ),
+      );
+      if (availableCharacterBaseIds.size < characterOpenSlots) {
+        errors.push(
+          `剩余角色不足（还需 ${characterOpenSlots - availableCharacterBaseIds.size} 个不同角色）`,
+        );
+      }
+
+      const posterOpenSlots = Math.max(
+        0,
+        5 -
+          fixedPosterIndexes.length -
+          (advancedLeaderPosterIdx >= 0 ? 1 : 0),
+      );
+      const compatiblePosterCount = getMaxCompatiblePosterCount(
+        selectedPosterIndexes,
+        usedPosterIndexes,
+        usedPosterRestrictIds,
+      );
+      if (compatiblePosterCount < posterOpenSlots) {
+        errors.push(
+          `剩余海报不足（还需 ${posterOpenSlots - compatiblePosterCount} 张无冲突海报）`,
+        );
+      }
+
+      const accessoryOpenSlots = Math.max(
+        0,
+        5 - fixedAccessoryIndexes.length,
+      );
+      const availableAccessoryCount = selectedAccessoryIndexes.filter(
+        (idx) => !usedAccessoryIndexes.has(idx),
+      ).length;
+      if (availableAccessoryCount < accessoryOpenSlots) {
+        errors.push(
+          `剩余饰品不足（还需 ${accessoryOpenSlots - availableAccessoryCount} 个库存饰品）`,
+        );
+      }
+
+      return {
+        errors,
+        charComb: perm(availableCharacterIndexes.length, characterOpenSlots),
+        posterComb: perm(compatiblePosterCount, posterOpenSlots),
+        accComb: perm(availableAccessoryCount, accessoryOpenSlots),
+        leaderPositionCount: legalLeaderPositions.length,
+        remainingText: `角色${characterOpenSlots}、海报${posterOpenSlots}、饰品${accessoryOpenSlots}`,
+      };
+    };
+
+    updateEstimate = () => {
+      const validation = getAutoPartyValidation();
+      const total =
+        validation.leaderPositionCount *
+        validation.charComb *
+        validation.posterComb *
+        validation.accComb;
+      const positionText =
+        autoPartyMode === "advanced"
+          ? ` × 队长位置${validation.leaderPositionCount}`
+          : "";
+      estText.textContent = `预估遍历次数: ${total.toLocaleString()} (角色${validation.charComb} × 海报${validation.posterComb} × 饰品${validation.accComb}${positionText})；剩余空位: ${validation.remainingText}`;
+      if (validation.errors.length > 0) {
+        validationText.style.display = "";
+        validationText.textContent = validation.errors
+          .map((message) => `• ${message}`)
+          .join("\n");
+      } else {
+        validationText.style.display = "none";
+        validationText.textContent = "";
+      }
       updateStartBtnState();
     };
 
-    const updateStartBtnState = () => {
-      const charCount = selectedChars.filter(Boolean).length;
-      const posterCount = selectedPosters.filter(Boolean).length;
-      const accCount = selectedAccs.filter(Boolean).length;
-      const missing = [];
-      if (charCount < 5) missing.push(`角色(${charCount}/5)`);
-      if (posterCount < 5) missing.push(`海报(${posterCount}/5)`);
-      if (accCount < 5) missing.push(`饰品(${accCount}/5)`);
+    updateStartBtnState = () => {
+      const validation = getAutoPartyValidation();
       if (isAutoPartyCalculating) {
         startBtn.disabled = true;
         startBtn.value = "计算中...";
@@ -993,9 +2003,9 @@ export default class PartyManager {
         return;
       }
       startBtn.value = hasCompletedAutoPartyRun ? "重新计算" : "开始计算";
-      startBtn.disabled = missing.length > 0;
+      startBtn.disabled = validation.errors.length > 0;
       startBtn.title =
-        missing.length > 0 ? `还需选择: ${missing.join("、")}` : "";
+        validation.errors.length > 0 ? validation.errors.join("；") : "";
     };
 
     const charSection = _("div", { style: { marginBottom: "15px" } });
@@ -1015,6 +2025,8 @@ export default class PartyManager {
               selectedChars[cb.getAttribute("data-chara")] = e.target.checked;
             });
           refreshLeaderOptions();
+          cleanupAdvancedReferences();
+          refreshAdvancedOptions();
           updateEstimate();
           saveState();
         },
@@ -1035,7 +2047,7 @@ export default class PartyManager {
       },
     });
     characters.forEach((c, idx) => {
-      const isChecked = savedChars.has(c.data.Id) || savedChars.size === 0;
+      const isChecked = savedChars.has(c.data.Id) || !hasSavedState;
       selectedChars[idx] = isChecked;
       const cb = _("input", {
         type: "checkbox",
@@ -1044,6 +2056,8 @@ export default class PartyManager {
           change: (e) => {
             selectedChars[idx] = e.target.checked;
             refreshLeaderOptions();
+            cleanupAdvancedReferences();
+            refreshAdvancedOptions();
             updateEstimate();
             saveState();
           },
@@ -1056,6 +2070,8 @@ export default class PartyManager {
         cb.checked = !cb.checked;
         selectedChars[idx] = cb.checked;
         refreshLeaderOptions();
+        cleanupAdvancedReferences();
+        refreshAdvancedOptions();
         updateEstimate();
         saveState();
       });
@@ -1093,6 +2109,8 @@ export default class PartyManager {
                 e.target.checked;
             });
           refreshLeaderOptions();
+          cleanupAdvancedReferences();
+          refreshAdvancedOptions();
           updateEstimate();
           saveState();
         },
@@ -1113,7 +2131,7 @@ export default class PartyManager {
       },
     });
     posters.forEach((p, idx) => {
-      const isChecked = savedPosters.has(p.data.Id) || savedPosters.size === 0;
+      const isChecked = savedPosters.has(p.data.Id) || !hasSavedState;
       selectedPosters[idx] = isChecked;
       const cb = _("input", {
         type: "checkbox",
@@ -1122,6 +2140,8 @@ export default class PartyManager {
           change: (e) => {
             selectedPosters[idx] = e.target.checked;
             refreshLeaderOptions();
+            cleanupAdvancedReferences();
+            refreshAdvancedOptions();
             updateEstimate();
             saveState();
           },
@@ -1134,6 +2154,8 @@ export default class PartyManager {
         cb.checked = !cb.checked;
         selectedPosters[idx] = cb.checked;
         refreshLeaderOptions();
+        cleanupAdvancedReferences();
+        refreshAdvancedOptions();
         updateEstimate();
         saveState();
       });
@@ -1169,6 +2191,8 @@ export default class PartyManager {
               cb.checked = e.target.checked;
               selectedAccs[cb.getAttribute("data-acc")] = e.target.checked;
             });
+          cleanupAdvancedReferences();
+          refreshAdvancedOptions();
           updateEstimate();
           saveState();
         },
@@ -1191,7 +2215,7 @@ export default class PartyManager {
     accessories.forEach((a, idx) => {
       const isChecked =
         (savedAccs.has(idx) && savedAccs.get(idx) === a.data.Id) ||
-        savedAccs.size === 0;
+        !hasSavedState;
       selectedAccs[idx] = isChecked;
       const cb = _("input", {
         type: "checkbox",
@@ -1199,6 +2223,8 @@ export default class PartyManager {
         event: {
           change: (e) => {
             selectedAccs[idx] = e.target.checked;
+            cleanupAdvancedReferences();
+            refreshAdvancedOptions();
             updateEstimate();
             saveState();
           },
@@ -1210,6 +2236,8 @@ export default class PartyManager {
       icon.addEventListener("click", () => {
         cb.checked = !cb.checked;
         selectedAccs[idx] = cb.checked;
+        cleanupAdvancedReferences();
+        refreshAdvancedOptions();
         updateEstimate();
         saveState();
       });
@@ -1247,12 +2275,16 @@ export default class PartyManager {
           leaderPosterSelect.value = pi;
         }
       }
-    } else if (savedChars.size > 0 && savedLeaderPosterId === null) {
+    } else if (hasSavedState && savedLeaderPosterId === null) {
       leaderPosterSelect.value = -1;
       leaderPosterIdx = -1;
     }
-    leaderIdx = parseInt(leaderSelect.value) || 0;
-    leaderPosterIdx = parseInt(leaderPosterSelect.value) || -1;
+    const parsedLeaderIdx = parseInt(leaderSelect.value);
+    const parsedLeaderPosterIdx = parseInt(leaderPosterSelect.value);
+    leaderIdx = Number.isInteger(parsedLeaderIdx) ? parsedLeaderIdx : -1;
+    leaderPosterIdx = Number.isInteger(parsedLeaderPosterIdx)
+      ? parsedLeaderPosterIdx
+      : -1;
 
     leaderSelect.addEventListener("change", (e) => {
       leaderIdx = parseInt(e.target.value);
@@ -1264,6 +2296,9 @@ export default class PartyManager {
       updateEstimate();
       saveState();
     });
+    cleanupAdvancedReferences();
+    refreshAdvancedOptions();
+    updateAutoPartyMode();
 
     const progressSection = _("div", {
       style: { display: "none", marginBottom: "15px" },
@@ -1330,6 +2365,11 @@ export default class PartyManager {
       event: {
         click: async () => {
           if (isAutoPartyCalculating) return;
+          const validation = getAutoPartyValidation();
+          if (validation.errors.length > 0) {
+            updateEstimate();
+            return;
+          }
           isAutoPartyCalculating = true;
           isAutoPartyCancelled = false;
           hasCompletedAutoPartyRun = false;
@@ -1339,21 +2379,56 @@ export default class PartyManager {
           cancelBtn.value = "关闭";
           progressSection.style.display = "";
 
-          const selChars = Array.from(selectedChars)
+          const selCharIndexes = Array.from(selectedChars)
             .map((v, i) => (v ? i : -1))
-            .filter((i) => i >= 0)
-            .map((i) => characters[i]);
-          const selPosters = Array.from(selectedPosters)
+            .filter((i) => i >= 0);
+          const selPosterIndexes = Array.from(selectedPosters)
             .map((v, i) => (v ? i : -1))
-            .filter((i) => i >= 0)
-            .map((i) => posters[i]);
-          const selAccs = Array.from(selectedAccs)
+            .filter((i) => i >= 0);
+          const selAccessoryIndexes = Array.from(selectedAccs)
             .map((v, i) => (v ? i : -1))
-            .filter((i) => i >= 0)
-            .map((i) => accessories[i]);
-          const leader = characters[leaderIdx];
+            .filter((i) => i >= 0);
+          const selChars = selCharIndexes.map((i) => characters[i]);
+          const selPosters = selPosterIndexes.map((i) => posters[i]);
+          const selAccs = selAccessoryIndexes.map((i) => accessories[i]);
+          const activeLeaderIdx =
+            autoPartyMode === "advanced" ? advancedLeaderIdx : leaderIdx;
+          const activeLeaderPosterIdx =
+            autoPartyMode === "advanced"
+              ? advancedLeaderPosterIdx
+              : leaderPosterIdx;
+          const leader = characters[activeLeaderIdx];
           const leaderPoster =
-            leaderPosterIdx === -1 ? null : posters[leaderPosterIdx];
+            activeLeaderPosterIdx < 0
+              ? null
+              : posters[activeLeaderPosterIdx];
+          const mapSlotIndexes = (slots, selectedIndexes) =>
+            slots.map((idx) => (idx < 0 ? -1 : selectedIndexes.indexOf(idx)));
+          let constraints = {
+            mode: "basic",
+            leaderPosition: -1,
+            characterSlots: [-1, -1, -1, -1, -1],
+            posterSlots: [-1, -1, -1, -1, -1],
+            accessorySlots: [-1, -1, -1, -1, -1],
+          };
+          if (autoPartyMode === "advanced") {
+            constraints = {
+              mode: "advanced",
+              leaderPosition: advancedLeaderPosition,
+              characterSlots: mapSlotIndexes(
+                advancedCharacterSlots,
+                selCharIndexes,
+              ),
+              posterSlots: mapSlotIndexes(
+                advancedPosterSlots,
+                selPosterIndexes,
+              ),
+              accessorySlots: mapSlotIndexes(
+                advancedAccessorySlots,
+                selAccessoryIndexes,
+              ),
+            };
+          }
 
           console.log(
             JSON.stringify(
@@ -1370,6 +2445,7 @@ export default class PartyManager {
                   id: a.id,
                   name: a.fullAccessoryName,
                 })),
+                constraints,
               },
               null,
               2,
@@ -1379,7 +2455,7 @@ export default class PartyManager {
           try {
             let result;
 
-            if (pythonCheckbox.checked) {
+            if (autoPartyMode === "basic" && pythonCheckbox.checked) {
               // ===== Python 脚本配队流程 =====
               if (typeof window.electronAPI === "undefined") {
                 resultSection.style.display = "";
@@ -1416,7 +2492,9 @@ export default class PartyManager {
               const saThreshold = parseInt(saThresholdInput.value) || 1;
               try {
                 localStorage.setItem("autoPartySAThreshold", saThreshold);
-              } catch {}
+              } catch {
+                // Keep the in-memory value when localStorage is unavailable.
+              }
 
               result = await root.handleAutoPartyPythonStream({
                 selChars,
@@ -1627,21 +2705,25 @@ export default class PartyManager {
               try {
                 localStorage.setItem("autoPartyWorkerCount", workerCount);
                 localStorage.setItem("autoPartySAThreshold", saThreshold);
-              } catch {}
+              } catch {
+                // Keep the in-memory values when localStorage is unavailable.
+              }
               result = await root.handleAutoParty({
                 selChars,
                 selPosters,
                 selAccs,
                 leader,
                 leaderPoster,
+                constraints,
                 searchMode: "precise",
                 useWebGPU,
                 workerCount,
                 saThreshold,
                 onTotalReady: (actualTotal, isGpuFiltered) => {
-                  if (isGpuFiltered) {
-                    estText.textContent = `实际遍历次数: ${actualTotal.toLocaleString()}（WebGPU 筛选后）`;
-                  }
+                  const source = isGpuFiltered
+                    ? "WebGPU 筛选后"
+                    : "约束规划后";
+                  estText.textContent = `实际遍历次数: ${actualTotal.toLocaleString()}（${source}）`;
                 },
                 onProgress: (progress) => {
                   const {
@@ -1671,11 +2753,9 @@ export default class PartyManager {
                         : "0.0";
                     const overallPct =
                       phase1Total + phase2Total > 0
-                        ? (
-                            ((phase1Current + phase2Current) /
-                              (phase1Total + phase2Total)) *
-                            100
-                          ).toFixed(1)
+                        ? (((phase1Current + phase2Current) /
+                            (phase1Total + phase2Total)) *
+                            100).toFixed(1)
                         : "0.0";
                     progressFill.style.width = overallPct + "%";
                     progressText.textContent = `评分中: ${phase2Current.toLocaleString()} / ${phase2Total.toLocaleString()} 候选 (${pct}%) - 当前最高分: ${bestScore}`;
@@ -1767,7 +2847,9 @@ export default class PartyManager {
 
     dialog.appendChild(title);
     dialog.appendChild(closeBtn);
+    dialog.appendChild(modeSection);
     dialog.appendChild(leaderSection);
+    dialog.appendChild(advancedSection);
     dialog.appendChild(charSection);
     dialog.appendChild(posterSection);
     dialog.appendChild(accSection);
@@ -1780,7 +2862,9 @@ export default class PartyManager {
     dialog.appendChild(resultSection);
     dialog.appendChild(btnRow);
     overlay.appendChild(dialog);
+    updateAutoPartyMode();
     updateEstimate();
+    saveState();
     document.body.appendChild(overlay);
   }
 

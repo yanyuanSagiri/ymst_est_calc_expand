@@ -1153,6 +1153,107 @@ export default class WebGPUStarActCounter {
   }
 
   /**
+   * 对按队长位置拆分的排列池使用同一个全局 SA 阈值进行筛选。
+   * 固定槽位与队长海报已经写入完整五槽排列，因此无需修改 WGSL。
+   *
+   * @param {Object} params
+   * @param {Array<{
+   *   characterPermutations: Array<Array<number>>,
+   *   posterPermutations: Array<Array<number>>,
+   * }>} params.groups
+   * @param {Array<Array<number>>} params.accessoryPermutations
+   * @returns {Promise<{
+   *   candidates: Array<{groupIdx:number, cpIdx:number, ppIdx:number, apIdx:number}>,
+   *   maxCount: number,
+   *   threshold: number,
+   *   totalCount: number,
+   *   maxCombo: Object|null,
+   * }>}
+   */
+  async computeFilteredPoolGroups(params, thresholdOffset = 1) {
+    const {
+      groups = [],
+      accessoryPermutations = [],
+      onGroupProgress = null,
+      ...commonParams
+    } = params;
+
+    if (groups.length === 0 || accessoryPermutations.length === 0) {
+      return {
+        candidates: [],
+        maxCount: 0,
+        threshold: 0,
+        totalCount: 0,
+        maxCombo: null,
+      };
+    }
+
+    const groupCounts = [];
+    let maxCount = 0;
+    let maxCombo = null;
+    let totalCount = 0;
+
+    for (let groupIdx = 0; groupIdx < groups.length; groupIdx++) {
+      const group = groups[groupIdx];
+      const charPerms = group.characterPermutations || [];
+      const posterPerms = group.posterPermutations || [];
+      if (charPerms.length === 0 || posterPerms.length === 0) {
+        groupCounts[groupIdx] = new Uint32Array(0);
+        continue;
+      }
+
+      const counts = await this.computeWithPools({
+        ...commonParams,
+        charPerms,
+        posterPerms,
+        accPerms: accessoryPermutations,
+        posterSlots: 5,
+        // 队长海报已由排列规划器写入对应的绝对位置。
+        leaderPosterIdx: -1,
+      });
+      groupCounts[groupIdx] = counts;
+      totalCount += counts.length;
+
+      const posterAccCount =
+        posterPerms.length * accessoryPermutations.length;
+      for (let i = 0; i < counts.length; i++) {
+        if (counts[i] <= maxCount) continue;
+        maxCount = counts[i];
+        maxCombo = {
+          groupIdx,
+          cpIdx: Math.floor(i / posterAccCount),
+          ppIdx: Math.floor(
+            (i % posterAccCount) / accessoryPermutations.length,
+          ),
+          apIdx: i % accessoryPermutations.length,
+        };
+      }
+
+      onGroupProgress?.(groupIdx + 1, groups.length);
+    }
+
+    const threshold = Math.max(0, maxCount - thresholdOffset);
+    const candidates = [];
+    groupCounts.forEach((counts, groupIdx) => {
+      const group = groups[groupIdx];
+      const posterPermCount = group.posterPermutations.length;
+      const accPermCount = accessoryPermutations.length;
+      const posterAccCount = posterPermCount * accPermCount;
+      for (let i = 0; i < counts.length; i++) {
+        if (counts[i] < threshold) continue;
+        candidates.push({
+          groupIdx,
+          cpIdx: Math.floor(i / posterAccCount),
+          ppIdx: Math.floor((i % posterAccCount) / accPermCount),
+          apIdx: i % accPermCount,
+        });
+      }
+    });
+
+    return { candidates, maxCount, threshold, totalCount, maxCombo };
+  }
+
+  /**
    * 优化版两阶段 GPU 筛选（减少 readback 数据量）
    *
    * Pass 1: 计算 starActCount + 归约找最大值（每批只 readback 4 字节）

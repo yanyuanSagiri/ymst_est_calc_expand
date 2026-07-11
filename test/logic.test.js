@@ -1,8 +1,6 @@
-import { readFileSync } from 'fs';
-
-import RootLogic from '../src/logic/RootLogic';
 import GameDb from '../src/db/GameDb';
 import CharacterData from '../src/character/CharacterData';
+import CharacterStarRankData from '../src/character/CharacterStarRankData';
 import AccessoryData from '../src/accessory/AccessoryData';
 import ScoreCalculator from '../src/logic/ScoreCalculator';
 import ScoreCalculationType from '../src/logic/ScoreCalculationType';
@@ -11,23 +9,24 @@ import StatBonus from '../src/logic/StatBonus';
 
 /* global global jest describe test expect beforeAll */
 global.window = global
+global.location = { protocol: 'file:' }
+jest.setTimeout(60000)
 
 beforeAll(async () => {
-  // 模拟本地fetch
-  global.fetch = jest.fn(async url => {
-    const path = url.split('?')[0].replace('./', process.cwd() + '/');
-    const data = readFileSync(path, 'utf-8');
-    return {
-      ok: true,
-      text: async () => data,
-      json: async () => JSON.parse(data),
-    }
-  })
-
-  // 全局初始化GameDb，root.init() 内较复杂，不使用
-  window.root = new RootLogic();
+  // 逻辑测试不需要初始化完整 UI，也避免把 Web Worker 的 import.meta
+  // 带进 Jest 的 CommonJS 执行环境。
+  window.root = {
+    appState: {
+      characterStarRank: new CharacterStarRankData(),
+      highScoreBuffManager: { currentActiveEffects: () => [] },
+      theaterLevel: { getEffects: () => [] },
+    },
+    calcType: 'normal',
+    senseBox: null,
+    senseNoteSelect: { value: 1 },
+    addWarningMessage: () => {},
+  };
   await GameDb.load();
-  root.senseNoteSelect = { value: 1 }
 })
 
 describe('Logic tests', () => {
@@ -51,6 +50,7 @@ describe('Logic tests', () => {
       albumExtra: [],
       leader: chara1,
       type: ScoreCalculationType.Normal,
+      skipSimulation: true,
     })
     calc.calc(null)
 
@@ -64,9 +64,9 @@ describe('Logic tests', () => {
       albumExtra: [],
       leader: chara1,
       type: ScoreCalculationType.Normal,
+      skipSimulation: true,
     })
     calc2.calc(null)
     expect(calc2.stat.buff[4][StatBonusType.Accessory][0][StatBonus.Vocal]).toBe(0)
   })
 })
-
