@@ -1,6 +1,9 @@
+/* global __dirname require */
+
 const { app, BrowserWindow, nativeImage, ipcMain } = require("electron");
 const path = require("path");
 const { spawn } = require("child_process");
+const { buildFormationArgs } = require("./formationArgs");
 const iconPath = path.join(__dirname, "..", "tbm.ico");
 const appIcon = nativeImage.createFromPath(iconPath);
 
@@ -133,16 +136,13 @@ function getFormationDataPath() {
   return path.join(__dirname, "..", "pyScript", "data");
 }
 
-ipcMain.handle("run-formation", async (event, userData) => {
+ipcMain.handle("run-formation", async (event, userData, options) => {
+  const dataPath = getFormationDataPath();
+  const args = buildFormationArgs(dataPath, options);
+
   await stopFormationProcess();
   return new Promise((resolve, reject) => {
     const exePath = getFormationExePath();
-    const dataPath = getFormationDataPath();
-    const args = [
-      "-d", dataPath,
-      "-mc", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0",
-      "-mp", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0",
-    ];
     const inputJson = JSON.stringify(userData);
 
     console.log("[run-formation] Python exe:", exePath);
@@ -177,7 +177,7 @@ ipcMain.handle("run-formation", async (event, userData) => {
           if (mainWindow && !mainWindow.isDestroyed())
             mainWindow.webContents.send("formation-result", msg);
         }
-      } catch (e) {
+      } catch {
         console.warn(
           "[run-formation] failed to parse stdout line:",
           line.substring(0, 120),

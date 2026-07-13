@@ -54,6 +54,28 @@ function normalizeAdvancedSlots(slots, label) {
   });
 }
 
+function normalizeCharacterSlotFixed(values, characterSlots) {
+  if (values === undefined) return new Array(PARTY_SIZE).fill(true);
+  if (!Array.isArray(values) || values.length !== PARTY_SIZE) {
+    constraintError(
+      "INVALID_CHARACTER_SLOT_FIXED",
+      `characterSlotFixed must contain exactly ${PARTY_SIZE} entries`,
+      { values },
+    );
+  }
+
+  return values.map((value, position) => {
+    if (typeof value !== "boolean") {
+      constraintError(
+        "INVALID_CHARACTER_SLOT_FIXED_VALUE",
+        `characterSlotFixed slot ${position} must be a boolean`,
+        { value, position },
+      );
+    }
+    return characterSlots[position] === -1 ? true : value;
+  });
+}
+
 function createCharacterKeys(characterCount, characterBaseIds) {
   return Array.from({ length: characterCount }, (_, index) => {
     const baseId = characterBaseIds[index];
@@ -202,6 +224,7 @@ function normalizeConstraints(constraints) {
       mode,
       leaderPosition: -1,
       characterSlots: new Array(PARTY_SIZE).fill(-1),
+      characterSlotFixed: new Array(PARTY_SIZE).fill(true),
       posterSlots: new Array(PARTY_SIZE).fill(-1),
       accessorySlots: new Array(PARTY_SIZE).fill(-1),
     };
@@ -220,12 +243,18 @@ function normalizeConstraints(constraints) {
     );
   }
 
+  const characterSlots = normalizeAdvancedSlots(
+    constraints?.characterSlots,
+    "character",
+  );
+
   return {
     mode,
     leaderPosition,
-    characterSlots: normalizeAdvancedSlots(
-      constraints?.characterSlots,
-      "character",
+    characterSlots,
+    characterSlotFixed: normalizeCharacterSlotFixed(
+      constraints?.characterSlotFixed,
+      characterSlots,
     ),
     posterSlots: normalizeAdvancedSlots(constraints?.posterSlots, "poster"),
     accessorySlots: normalizeAdvancedSlots(
@@ -235,12 +264,48 @@ function normalizeConstraints(constraints) {
   };
 }
 
+function splitAdvancedRows(normalizedConstraints) {
+  const absoluteCharacterSlots = new Array(PARTY_SIZE).fill(-1);
+  const absolutePosterSlots = normalizedConstraints.posterSlots.slice();
+  const absoluteAccessorySlots = normalizedConstraints.accessorySlots.slice();
+  const movableRows = [];
+
+  for (let position = 0; position < PARTY_SIZE; position++) {
+    const characterIdx = normalizedConstraints.characterSlots[position];
+    const isMovable =
+      characterIdx !== -1 &&
+      normalizedConstraints.characterSlotFixed[position] === false;
+
+    if (!isMovable) {
+      absoluteCharacterSlots[position] = characterIdx;
+      continue;
+    }
+
+    movableRows.push({
+      sourcePosition: position,
+      characterIdx,
+      posterIdx: normalizedConstraints.posterSlots[position],
+      accessoryIdx: normalizedConstraints.accessorySlots[position],
+    });
+    absolutePosterSlots[position] = -1;
+    absoluteAccessorySlots[position] = -1;
+  }
+
+  return {
+    absoluteCharacterSlots,
+    absolutePosterSlots,
+    absoluteAccessorySlots,
+    movableRows,
+  };
+}
+
 function getLeaderPositions({
   normalizedConstraints,
   leaderIdx,
   leaderPosterIdx,
+  absoluteCharacterSlots,
+  absolutePosterSlots,
 }) {
-  const { characterSlots, posterSlots } = normalizedConstraints;
   let forcedPosition =
     normalizedConstraints.leaderPosition === -1
       ? null
@@ -248,19 +313,19 @@ function getLeaderPositions({
 
   forcedPosition = mergeForcedLeaderPosition(
     forcedPosition,
-    findFixedPosition(characterSlots, leaderIdx),
+    findFixedPosition(absoluteCharacterSlots, leaderIdx),
     "characterSlots",
   );
   if (leaderPosterIdx >= 0) {
     forcedPosition = mergeForcedLeaderPosition(
       forcedPosition,
-      findFixedPosition(posterSlots, leaderPosterIdx),
+      findFixedPosition(absolutePosterSlots, leaderPosterIdx),
       "posterSlots",
     );
   }
 
   if (forcedPosition !== null) {
-    const fixedCharacter = characterSlots[forcedPosition];
+    const fixedCharacter = absoluteCharacterSlots[forcedPosition];
     if (fixedCharacter !== -1 && fixedCharacter !== leaderIdx) {
       constraintError(
         "LEADER_POSITION_CONFLICT",
@@ -270,7 +335,7 @@ function getLeaderPositions({
     }
 
     if (leaderPosterIdx >= 0) {
-      const fixedPoster = posterSlots[forcedPosition];
+      const fixedPoster = absolutePosterSlots[forcedPosition];
       if (fixedPoster !== -1 && fixedPoster !== leaderPosterIdx) {
         constraintError(
           "LEADER_POSTER_POSITION_CONFLICT",
@@ -284,8 +349,11 @@ function getLeaderPositions({
 
   const positions = [];
   for (let position = 0; position < PARTY_SIZE; position++) {
-    if (characterSlots[position] !== -1) continue;
-    if (leaderPosterIdx >= 0 && posterSlots[position] !== -1) continue;
+    if (absoluteCharacterSlots[position] !== -1) continue;
+    if (
+      leaderPosterIdx >= 0 &&
+      absolutePosterSlots[position] !== -1
+    ) continue;
     positions.push(position);
   }
 
@@ -300,12 +368,21 @@ function getLeaderPositions({
 
 function validateLeaderAgainstFixedCharacters({
   leaderIdx,
-  characterSlots,
+  absoluteCharacterSlots,
   characterKeys,
   fixedCharacterState,
 }) {
-  const leaderPosition = findFixedPosition(characterSlots, leaderIdx);
+  const leaderPosition = findFixedPosition(absoluteCharacterSlots, leaderIdx);
   if (leaderPosition !== null) return;
+
+  if (fixedCharacterState.usedIndices.has(leaderIdx)) {
+    const position = fixedCharacterState.usedIndices.get(leaderIdx);
+    constraintError(
+      "DUPLICATE_FIXED_CHARACTER",
+      "The leader cannot also be configured as a movable character",
+      { leaderIdx, position },
+    );
+  }
 
   const leaderKey = characterKeys[leaderIdx];
   if (fixedCharacterState.usedKeys.has(leaderKey)) {
@@ -324,13 +401,25 @@ function validateLeaderAgainstFixedCharacters({
 
 function validateLeaderPosterAgainstFixedPosters({
   leaderPosterIdx,
-  posterSlots,
+  absolutePosterSlots,
   posterRestrictionKeys,
   fixedPosterState,
 }) {
   if (leaderPosterIdx < 0) return;
-  const leaderPosterPosition = findFixedPosition(posterSlots, leaderPosterIdx);
+  const leaderPosterPosition = findFixedPosition(
+    absolutePosterSlots,
+    leaderPosterIdx,
+  );
   if (leaderPosterPosition !== null) return;
+
+  if (fixedPosterState.usedIndices.has(leaderPosterIdx)) {
+    const position = fixedPosterState.usedIndices.get(leaderPosterIdx);
+    constraintError(
+      "DUPLICATE_FIXED_POSTER",
+      "The leader poster cannot be attached to a movable character",
+      { leaderPosterIdx, position },
+    );
+  }
 
   const restrictionKey = posterRestrictionKeys[leaderPosterIdx];
   if (restrictionKey === null) return;
@@ -346,6 +435,21 @@ function validateLeaderPosterAgainstFixedPosters({
       },
     );
   }
+}
+
+function slotSignature(slots) {
+  return slots.join(",");
+}
+
+function getCachedPermutations(cache, count, fixedSlots, uniqueKeys = null) {
+  const signature = slotSignature(fixedSlots);
+  if (!cache.has(signature)) {
+    cache.set(
+      signature,
+      generateSlotPermutations(count, fixedSlots, uniqueKeys),
+    );
+  }
+  return cache.get(signature);
 }
 
 export function createAutoPartyPermutationPlan({
@@ -385,6 +489,7 @@ export function createAutoPartyPermutationPlan({
     posterCount,
     Array.isArray(posterRestrictGroupIds) ? posterRestrictGroupIds : [],
   );
+  const rowLayout = splitAdvancedRows(normalizedConstraints);
 
   let leaderPositions = [0, 1, 2, 3, 4];
   if (normalizedConstraints.mode === "advanced") {
@@ -412,13 +517,13 @@ export function createAutoPartyPermutationPlan({
     });
     validateLeaderAgainstFixedCharacters({
       leaderIdx,
-      characterSlots: normalizedConstraints.characterSlots,
+      absoluteCharacterSlots: rowLayout.absoluteCharacterSlots,
       characterKeys,
       fixedCharacterState,
     });
     validateLeaderPosterAgainstFixedPosters({
       leaderPosterIdx,
-      posterSlots: normalizedConstraints.posterSlots,
+      absolutePosterSlots: rowLayout.absolutePosterSlots,
       posterRestrictionKeys,
       fixedPosterState,
     });
@@ -426,41 +531,113 @@ export function createAutoPartyPermutationPlan({
       normalizedConstraints,
       leaderIdx,
       leaderPosterIdx,
+      absoluteCharacterSlots: rowLayout.absoluteCharacterSlots,
+      absolutePosterSlots: rowLayout.absolutePosterSlots,
     });
   }
 
-  const accessoryPermutations = generateSlotPermutations(
-    accessoryCount,
-    normalizedConstraints.accessorySlots,
-  );
-  const groups = [];
-  let totalCombinations = 0;
+  const groupBuilders = new Map();
+  const posterPermutationCache = new Map();
+  const accessoryPermutationCache = new Map();
+  let movableLayoutCount = 0;
 
   for (const leaderPosition of leaderPositions) {
-    const fixedCharacters = normalizedConstraints.characterSlots.slice();
+    const fixedCharacters = rowLayout.absoluteCharacterSlots.slice();
     fixedCharacters[leaderPosition] = leaderIdx;
-    const characterPermutations = generateSlotPermutations(
-      characterCount,
-      fixedCharacters,
-      characterKeys,
-    );
-
-    const fixedPosters = normalizedConstraints.posterSlots.slice();
+    const fixedPosters = rowLayout.absolutePosterSlots.slice();
     if (leaderPosterIdx >= 0) fixedPosters[leaderPosition] = leaderPosterIdx;
-    const posterPermutations = generateSlotPermutations(
-      posterCount,
-      fixedPosters,
-      posterRestrictionKeys,
-    );
+    const fixedAccessories = rowLayout.absoluteAccessorySlots.slice();
 
+    const addResolvedLayout = () => {
+      movableLayoutCount++;
+      const posterSignature = slotSignature(fixedPosters);
+      const accessorySignature = slotSignature(fixedAccessories);
+      const groupKey =
+        `${leaderPosition}|poster:${posterSignature}` +
+        `|accessory:${accessorySignature}`;
+      let group = groupBuilders.get(groupKey);
+      if (!group) {
+        group = {
+          leaderPosition,
+          characterPermutations: [],
+          posterPermutations: getCachedPermutations(
+            posterPermutationCache,
+            posterCount,
+            fixedPosters,
+            posterRestrictionKeys,
+          ),
+          accessoryPermutations: getCachedPermutations(
+            accessoryPermutationCache,
+            accessoryCount,
+            fixedAccessories,
+          ),
+        };
+        groupBuilders.set(groupKey, group);
+      }
+
+      const resolvedCharacters = generateSlotPermutations(
+        characterCount,
+        fixedCharacters,
+        characterKeys,
+      );
+      for (const permutation of resolvedCharacters) {
+        group.characterPermutations.push(permutation);
+      }
+    };
+
+    const placeMovableRow = (rowIndex) => {
+      if (rowIndex === rowLayout.movableRows.length) {
+        addResolvedLayout();
+        return;
+      }
+
+      const row = rowLayout.movableRows[rowIndex];
+      for (let position = 0; position < PARTY_SIZE; position++) {
+        if (fixedCharacters[position] !== -1) continue;
+        if (row.posterIdx !== -1 && fixedPosters[position] !== -1) continue;
+        if (
+          row.accessoryIdx !== -1 &&
+          fixedAccessories[position] !== -1
+        ) continue;
+
+        fixedCharacters[position] = row.characterIdx;
+        if (row.posterIdx !== -1) fixedPosters[position] = row.posterIdx;
+        if (row.accessoryIdx !== -1) {
+          fixedAccessories[position] = row.accessoryIdx;
+        }
+
+        placeMovableRow(rowIndex + 1);
+
+        fixedCharacters[position] = -1;
+        if (row.posterIdx !== -1) fixedPosters[position] = -1;
+        if (row.accessoryIdx !== -1) fixedAccessories[position] = -1;
+      }
+    };
+
+    placeMovableRow(0);
+  }
+
+  if (rowLayout.movableRows.length > 0 && movableLayoutCount === 0) {
+    constraintError(
+      "NO_LEGAL_MOVABLE_CHARACTER_PLACEMENT",
+      "There is no legal placement for the movable character rows",
+      {
+        sourcePositions: rowLayout.movableRows.map(
+          (row) => row.sourcePosition,
+        ),
+      },
+    );
+  }
+
+  const groups = [];
+  let totalCombinations = 0;
+  for (const group of groupBuilders.values()) {
     const combinationCount =
-      characterPermutations.length *
-      posterPermutations.length *
-      accessoryPermutations.length;
+      group.characterPermutations.length *
+      group.posterPermutations.length *
+      group.accessoryPermutations.length;
     groups.push({
-      leaderPosition,
-      characterPermutations,
-      posterPermutations,
+      ...group,
       combinationCount,
       offset: totalCombinations,
     });
@@ -469,7 +646,6 @@ export function createAutoPartyPermutationPlan({
 
   return {
     groups,
-    accessoryPermutations,
     totalCombinations,
   };
 }
@@ -495,7 +671,7 @@ export function resolveAutoPartyCombination(plan, index) {
   }
 
   const group = plan.groups[groupIdx];
-  const accessoryCount = plan.accessoryPermutations.length;
+  const accessoryCount = group.accessoryPermutations.length;
   const posterBlockSize = group.posterPermutations.length * accessoryCount;
   const localIndex = index - group.offset;
   const characterPermutationIndex = Math.floor(
@@ -513,6 +689,6 @@ export function resolveAutoPartyCombination(plan, index) {
     accessoryPermutationIndex,
     charPerm: group.characterPermutations[characterPermutationIndex],
     posterPerm: group.posterPermutations[posterPermutationIndex],
-    accPerm: plan.accessoryPermutations[accessoryPermutationIndex],
+    accPerm: group.accessoryPermutations[accessoryPermutationIndex],
   };
 }

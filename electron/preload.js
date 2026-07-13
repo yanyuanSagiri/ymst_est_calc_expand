@@ -1,7 +1,10 @@
+/* global require */
+
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("electronAPI", {
-  runFormation: (userData) => ipcRenderer.invoke("run-formation", userData),
+  runFormation: (userData, options) =>
+    ipcRenderer.invoke("run-formation", userData, options),
   stopFormation: () => ipcRenderer.invoke("stop-formation"),
   pauseFormation: () => ipcRenderer.invoke("pause-formation"),
   resumeFormation: () => ipcRenderer.invoke("resume-formation"),

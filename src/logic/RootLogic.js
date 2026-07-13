@@ -21,6 +21,7 @@ import ScoreCalculator from "./ScoreCalculator";
 import MergedLiveSimulator from "./MergedLiveSimulator";
 import AutoPartyWorkerPool from "./AutoPartyWorkerPool";
 import { createAutoPartyPermutationPlan } from "./AutoPartyPermutationPlanner";
+import { resolvePythonFormationRow } from "./PythonAutoPartyConstraints";
 import WebGPUStarActCounter from "./WebGPUStarActCounter";
 import LiveSimulator from "./LiveSimulator";
 import FilterManager from "../manager/FilterManager";
@@ -2509,6 +2510,11 @@ export default class RootLogic {
       characterSlots: new Array(5)
         .fill(-1)
         .map((_, i) => normalizeSlotIndex(constraints?.characterSlots?.[i])),
+      characterSlotFixed: new Array(5).fill(true).map((_, i) =>
+        typeof constraints?.characterSlotFixed?.[i] === "boolean"
+          ? constraints.characterSlotFixed[i]
+          : true,
+      ),
       posterSlots: new Array(5)
         .fill(-1)
         .map((_, i) => normalizeSlotIndex(constraints?.posterSlots?.[i])),
@@ -2694,7 +2700,7 @@ export default class RootLogic {
 
             if (gpuPlan.totalCombinations > 0) {
               console.log(
-                `autoParty: WebGPU evaluating ${gpuPlan.totalCombinations.toLocaleString()} constrained combinations in ${gpuPlan.groups.length} leader-position groups`,
+                `autoParty: WebGPU evaluating ${gpuPlan.totalCombinations.toLocaleString()} constrained combinations in ${gpuPlan.groups.length} layout groups`,
               );
 
               const gpuResult = await gpuCounter.computeFilteredPoolGroups(
@@ -2704,7 +2710,6 @@ export default class RootLogic {
                   posterDataPool: posterLightEffects,
                   accDataPool: accLightEffects,
                   groups: gpuPlan.groups,
-                  accessoryPermutations: gpuPlan.accessoryPermutations,
                   leaderCharIdx: leaderIdx,
                   starActReq: starActReqs,
                   stockType,
@@ -2724,7 +2729,7 @@ export default class RootLogic {
                   posterPerm:
                     group.posterPermutations[candidate.ppIdx].slice(),
                   accPerm:
-                    gpuPlan.accessoryPermutations[candidate.apIdx].slice(),
+                    group.accessoryPermutations[candidate.apIdx].slice(),
                 };
               });
             }
@@ -2841,6 +2846,7 @@ export default class RootLogic {
     onProgress,
     workerCount,
     saThreshold = 1,
+    rowConstraints = null,
   }) {
     const leaderIdx = selChars.indexOf(leader);
     const leaderPosterIdx = leaderPoster
@@ -2930,17 +2936,18 @@ export default class RootLogic {
         330160,
       ];
       const matchedRows = [];
-      const leaderCharId = leader ? leader.Id : null;
-      const leaderPosterId = leaderPoster ? leaderPoster.id : null;
 
       for (const row of batch) {
         const charIds = row.slice(0, 5);
         const posterIds = row.slice(5, 10);
-        const accIds = row.slice(10, 15);
-
-        // 跳过不含队长角色或队长海报的组合
-        if (leaderCharId && !charIds.includes(leaderCharId)) continue;
-        if (leaderPosterId && !posterIds.includes(leaderPosterId)) continue;
+        const resolvedRow = resolvePythonFormationRow({
+          row,
+          characters: selChars,
+          posters: selPosters,
+          rowConstraints,
+        });
+        if (!resolvedRow) continue;
+        const { charPerm, posterPerm, accessoryIds: accIds } = resolvedRow;
 
         // 检查是否匹配目标前10个元素
         const isMatch = targetFirst10.every((tid, ti) => {
@@ -3009,34 +3016,15 @@ export default class RootLogic {
               if (!root.appState.accessories.includes(acc)) {
                 root.appState.accessories.push(acc);
               }
-            } catch (err) {
+            } catch {
               accIdToIdx.set(id, []); // 标记为无效
             }
           }
         }
 
-        const charUsed = new Map();
-        const charPerm = [];
         let ok = true;
-        for (const id of charIds) {
-          const pool = charIdToIdx.get(id);
-          if (!pool) {
-            ok = false;
-            break;
-          }
-          const used = charUsed.get(id) || 0;
-          if (used >= pool.length) {
-            ok = false;
-            break;
-          }
-          charPerm.push(pool[used]);
-          charUsed.set(id, used + 1);
-        }
-        if (!ok) continue;
-
         const accUsed = new Map();
         const accPerm = [];
-        ok = true;
         for (const id of accIds) {
           const pool = accIdToIdx.get(id);
           if (!pool || pool.length === 0) {
@@ -3102,7 +3090,7 @@ export default class RootLogic {
               if (!root.appState.accessories.includes(acc)) {
                 root.appState.accessories.push(acc);
               }
-            } catch (err) {
+            } catch {
               ok = false;
               break;
             }
@@ -3112,35 +3100,9 @@ export default class RootLogic {
         }
         if (!ok) continue;
 
-        // 构建海报排列：队长海报放在队长角色所在位置，其余用 Python 返回的海报
-        const leaderPos = charPerm.indexOf(leaderIdx);
-        const posterUsed2 = new Map();
-        const posterIdToIdxCopy = new Map();
-        posterIdToIdx.forEach((v, k) => posterIdToIdxCopy.set(k, [...v]));
-        const fullPosterIndices = [];
-        for (let pos = 0; pos < 5; pos++) {
-          if (pos === leaderPos && leaderPosterIdx >= 0) {
-            fullPosterIndices.push(leaderPosterIdx);
-          } else {
-            const id = posterIds[pos];
-            const pool = posterIdToIdxCopy.get(id);
-            if (!pool) {
-              ok = false;
-              break;
-            }
-            const used = posterUsed2.get(id) || 0;
-            if (used >= pool.length) {
-              ok = false;
-              break;
-            }
-            fullPosterIndices.push(pool[used]);
-            posterUsed2.set(id, used + 1);
-          }
-        }
-        if (!ok) continue;
         filteredCombinations.push({
           charPerm,
-          posterPerm: fullPosterIndices,
+          posterPerm,
           accPerm,
         });
       }

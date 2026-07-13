@@ -1,6 +1,7 @@
 import Party from "./Party";
 import ConstText from "../db/ConstText";
 import GameDb from "../db/GameDb";
+import { createPythonAutoPartyPlan } from "../logic/PythonAutoPartyConstraints";
 
 import _ from "../createElement";
 import removeAllChilds from "../removeAllChilds";
@@ -501,8 +502,44 @@ export default class PartyManager {
         width: "70vw",
         maxWidth: "900px",
         zIndex: 10001,
+        opacity: "1",
+        transition: "opacity 120ms ease",
       },
     });
+    const setAutoPartyDialogHidden = (hidden) => {
+      dialog.style.opacity = hidden ? "0" : "1";
+      dialog.style.pointerEvents = hidden ? "none" : "auto";
+    };
+    const hoverPreviewButton = _(
+      "button",
+      {
+        type: "button",
+        title: "将鼠标停在这里可暂时隐藏自动配队弹窗",
+        "aria-label": "悬浮查看当前编队",
+        style: {
+          position: "fixed",
+          top: "50%",
+          right: "0",
+          transform: "translateY(-50%)",
+          zIndex: 10003,
+          padding: "14px 9px",
+          border: "1px solid #90a4ae",
+          borderRadius: "8px 0 0 8px",
+          background: "rgba(255, 255, 255, 0.94)",
+          boxShadow: "0 3px 12px rgba(0, 0, 0, 0.25)",
+          color: "#455a64",
+          cursor: "default",
+          writingMode: "vertical-rl",
+          letterSpacing: "2px",
+          userSelect: "none",
+        },
+        event: {
+          mouseenter: () => setAutoPartyDialogHidden(true),
+          mouseleave: () => setAutoPartyDialogHidden(false),
+        },
+      },
+      [_("text", "悬浮查看编队")],
+    );
 
     const savedChars = new Set();
     const savedPosters = new Set();
@@ -626,6 +663,26 @@ export default class PartyManager {
       root.appState.accessories,
       accessories,
     );
+    const restoreCharacterSlotFixed = (value) => {
+      if (
+        !Array.isArray(value) ||
+        value.length !== 5 ||
+        !value.every((fixed) => typeof fixed === "boolean")
+      ) {
+        return new Array(5).fill(true);
+      }
+      return value.slice();
+    };
+    const advancedCharacterSlotFixed = restoreCharacterSlotFixed(
+      savedAdvancedState?.characterSlotFixed,
+    );
+    const clearAdvancedCharacterSlot = (position) => {
+      advancedCharacterSlots[position] = -1;
+      advancedCharacterSlotFixed[position] = true;
+    };
+    advancedCharacterSlots.forEach((idx, position) => {
+      if (idx < 0) advancedCharacterSlotFixed[position] = true;
+    });
     let isAutoPartyCalculating = false;
     let hasCompletedAutoPartyRun = false;
     let isAutoPartyCancelled = false;
@@ -633,7 +690,7 @@ export default class PartyManager {
 
     const saveState = () => {
       const data = {
-        version: 2,
+        version: 3,
         mode: autoPartyMode,
         chars: characters
           .filter((_, i) => selectedChars[i])
@@ -662,6 +719,7 @@ export default class PartyManager {
           characterSlots: advancedCharacterSlots.map((idx) =>
             createInventoryRef(characters[idx], root.appState.characters),
           ),
+          characterSlotFixed: advancedCharacterSlotFixed.slice(),
           posterSlots: advancedPosterSlots.map((idx) =>
             createInventoryRef(posters[idx], root.appState.posters),
           ),
@@ -796,6 +854,7 @@ export default class PartyManager {
     let refreshAdvancedOptions = () => {};
     let cleanupAdvancedReferences = () => {};
     let updateAutoPartyMode = () => {};
+    let updatePythonAvailability = () => {};
     let updateEstimate = () => {};
     let updateStartBtnState = () => {};
 
@@ -952,12 +1011,12 @@ export default class PartyManager {
                 idx >= 0 &&
                 characters[idx]?.data.CharacterBaseMasterId === leaderBaseId
               ) {
-                advancedCharacterSlots[position] = -1;
+                clearAdvancedCharacterSlot(position);
               }
             });
           }
           if (advancedLeaderPosition >= 0) {
-            advancedCharacterSlots[advancedLeaderPosition] = -1;
+            clearAdvancedCharacterSlot(advancedLeaderPosition);
           }
           refreshAdvancedOptions();
           updateEstimate();
@@ -1031,7 +1090,7 @@ export default class PartyManager {
             if (!radio.checked) return;
             advancedLeaderPosition = position;
             if (position >= 0) {
-              advancedCharacterSlots[position] = -1;
+              clearAdvancedCharacterSlot(position);
               if (advancedLeaderPosterIdx >= 0) {
                 advancedPosterSlots[position] = -1;
               }
@@ -1060,6 +1119,7 @@ export default class PartyManager {
       poster: [],
       accessory: [],
     };
+    const advancedCharacterSlotFixedInputs = [];
     const advancedSlotsByType = {
       character: advancedCharacterSlots,
       poster: advancedPosterSlots,
@@ -1094,9 +1154,14 @@ export default class PartyManager {
     const setAdvancedSlot = (type, position, value) => {
       const slots = advancedSlotsByType[type];
       const items = advancedSlotMeta[type].items;
+      const previousValue = slots[position];
       const parsedValue = parseInt(value);
       if (!Number.isInteger(parsedValue) || parsedValue < 0) {
-        slots[position] = -1;
+        if (type === "character") {
+          clearAdvancedCharacterSlot(position);
+        } else {
+          slots[position] = -1;
+        }
       } else {
         slots.forEach((idx, otherPosition) => {
           if (otherPosition === position || idx < 0) return;
@@ -1113,9 +1178,17 @@ export default class PartyManager {
               (restrictId &&
                 restrictId === items[idx]?.data.OrganizeRestrictGroupId);
           }
-          if (conflicts) slots[otherPosition] = -1;
+          if (!conflicts) return;
+          if (type === "character") {
+            clearAdvancedCharacterSlot(otherPosition);
+          } else {
+            slots[otherPosition] = -1;
+          }
         });
         slots[position] = parsedValue;
+        if (type === "character" && previousValue !== parsedValue) {
+          advancedCharacterSlotFixed[position] = true;
+        }
       }
       refreshAdvancedOptions();
       updateEstimate();
@@ -1184,7 +1257,12 @@ export default class PartyManager {
           },
           [
             _("strong", {}, [
-              _("text", `选择${position + 1}号位固定${meta.label}`),
+              _(
+                "text",
+                type === "character"
+                  ? `选择第${position + 1}行必选角色`
+                  : `选择第${position + 1}行${meta.label}`,
+              ),
             ]),
             _("input", {
               type: "button",
@@ -1198,7 +1276,10 @@ export default class PartyManager {
         _(
           "div",
           { style: { color: "#666", fontSize: "12px", marginBottom: "8px" } },
-          [_("text", "仅显示当前已勾选的候选；选择已固定项会将其移动到这里。")],
+          [_(
+            "text",
+            "仅显示当前已勾选的候选；选择已使用项会将该项移动到这里。",
+          )],
         ),
       );
 
@@ -1210,7 +1291,7 @@ export default class PartyManager {
         "span",
         {
           className: `list-icon-container small-text${type === "poster" ? " arial" : ""}`,
-          title: "不固定",
+          title: type === "character" ? "不选择角色" : `不选择${meta.label}`,
           style: { cursor: "pointer" },
           event: { click: () => chooseCandidate(-1) },
         },
@@ -1221,7 +1302,7 @@ export default class PartyManager {
             style: { marginLeft: 0 },
           }),
           _("br"),
-          _("span", {}, [_("text", "不固定")]),
+          _("span", {}, [_("text", "不选择")]),
         ],
       );
       if (slots[position] < 0) emptyOption.classList.add("selected");
@@ -1260,12 +1341,12 @@ export default class PartyManager {
     const advancedSlotsGrid = _("div", {
       style: {
         display: "grid",
-        gridTemplateColumns: "90px repeat(3, minmax(90px, 1fr))",
+        gridTemplateColumns: "90px 72px repeat(3, minmax(90px, 1fr))",
         gap: "8px",
         alignItems: "center",
       },
     });
-    ["队长 / 位置", "固定角色", "固定海报", "固定饰品"].forEach((label) => {
+    ["队长 / 位置", "固定位置", "必选角色", "海报", "饰品"].forEach((label) => {
       advancedSlotsGrid.appendChild(
         _("div", { style: { fontWeight: "bold", textAlign: "center" } }, [_("text", label)]),
       );
@@ -1279,6 +1360,44 @@ export default class PartyManager {
           _("text", ` ${position + 1}号位`),
         ]),
       ];
+      const fixedPositionCheckbox = _("input", {
+        type: "checkbox",
+        title: "勾选时固定在该位置；取消后角色位置自动，同行海报和饰品跟随角色",
+        event: {
+          change: () => {
+            const hasCharacter = advancedCharacterSlots[position] >= 0;
+            const isLeaderPosition =
+              advancedLeaderIdx >= 0 &&
+              advancedLeaderPosition === position;
+            if (!hasCharacter || isLeaderPosition) {
+              advancedCharacterSlotFixed[position] = true;
+              fixedPositionCheckbox.checked = true;
+              return;
+            }
+            advancedCharacterSlotFixed[position] =
+              fixedPositionCheckbox.checked;
+            refreshAdvancedOptions();
+            updateEstimate();
+            saveState();
+          },
+        },
+      });
+      fixedPositionCheckbox.checked = advancedCharacterSlotFixed[position];
+      advancedCharacterSlotFixedInputs[position] = fixedPositionCheckbox;
+      rowChildren.push(
+        _(
+          "label",
+          {
+            style: {
+              display: "flex",
+              justifyContent: "center",
+              alignItems: "center",
+            },
+            title: fixedPositionCheckbox.title,
+          },
+          [fixedPositionCheckbox],
+        ),
+      );
       ["character", "poster", "accessory"].forEach((type) => {
         const meta = advancedSlotMeta[type];
         const icon = _("span", {
@@ -1317,7 +1436,10 @@ export default class PartyManager {
       _(
         "div",
         { style: { marginTop: "6px", color: "#666", fontSize: "12px" } },
-        [_("text", "点击图标选择固定项；虚线空槽表示不固定，蓝色高亮槽跟随队长。")],
+        [_(
+          "text",
+          "点击图标选择必选项；取消“固定位置”后，该行角色位置自动，同行海报和饰品跟随角色。蓝色高亮槽跟随队长。",
+        )],
       ),
     );
     const clearAdvancedBtn = _("input", {
@@ -1330,6 +1452,7 @@ export default class PartyManager {
           advancedLeaderPosterIdx = -1;
           advancedLeaderPosition = -1;
           advancedCharacterSlots.fill(-1);
+          advancedCharacterSlotFixed.fill(true);
           advancedPosterSlots.fill(-1);
           advancedAccessorySlots.fill(-1);
           refreshAdvancedOptions();
@@ -1352,7 +1475,9 @@ export default class PartyManager {
         advancedLeaderPosterIdx = -1;
       }
       advancedCharacterSlots.forEach((idx, position) => {
-        if (idx < 0 || !selectedChars[idx]) advancedCharacterSlots[position] = -1;
+        if (idx < 0 || !selectedChars[idx]) {
+          clearAdvancedCharacterSlot(position);
+        }
       });
       advancedPosterSlots.forEach((idx, position) => {
         if (idx < 0 || !selectedPosters[idx]) advancedPosterSlots[position] = -1;
@@ -1384,11 +1509,17 @@ export default class PartyManager {
       const item = itemIdx >= 0 ? meta.items[itemIdx] : null;
       icon.dataset.id = item ? meta.iconId(item) : "";
       if (item) {
-        stateLabel = derived
-          ? `${type === "character" ? "队长" : "队长海报"}：${meta.name(item)}`
-          : `固定：${meta.name(item)}`;
+        if (derived) {
+          stateLabel = `${type === "character" ? "队长" : "队长海报"}：${meta.name(item)}`;
+        } else if (!advancedCharacterSlotFixed[position]) {
+          stateLabel = `${
+            type === "character" ? "必选（位置自动）" : "跟随角色"
+          }：${meta.name(item)}`;
+        } else {
+          stateLabel = `固定：${meta.name(item)}`;
+        }
       }
-      icon.title = `${position + 1}号位${meta.label} - ${stateLabel}${
+      icon.title = `第${position + 1}行${meta.label} - ${stateLabel}${
         derived ? "（跟随队长位置）" : "（点击选择）"
       }`;
       icon.setAttribute("aria-label", icon.title);
@@ -1397,9 +1528,11 @@ export default class PartyManager {
       icon.style.borderRadius = "10px";
       icon.style.boxShadow = derived
         ? "0 0 0 3px rgba(33, 150, 243, 0.45)"
-        : item
-          ? "0 0 0 2px rgba(63, 81, 181, 0.25)"
-          : "";
+        : item && !advancedCharacterSlotFixed[position]
+          ? "0 0 0 2px rgba(0, 150, 136, 0.35)"
+          : item
+            ? "0 0 0 2px rgba(63, 81, 181, 0.25)"
+            : "";
       if (derived) {
         icon.setAttribute("aria-disabled", "true");
         icon.setAttribute("tabindex", "-1");
@@ -1446,10 +1579,27 @@ export default class PartyManager {
       });
 
       for (let position = 0; position < 5; position++) {
+        const hasCharacter = advancedCharacterSlots[position] >= 0;
+        const isLeaderPosition =
+          advancedLeaderIdx >= 0 && advancedLeaderPosition === position;
+        if (!hasCharacter || isLeaderPosition) {
+          advancedCharacterSlotFixed[position] = true;
+        }
+        const fixedPositionCheckbox =
+          advancedCharacterSlotFixedInputs[position];
+        fixedPositionCheckbox.checked =
+          advancedCharacterSlotFixed[position];
+        fixedPositionCheckbox.disabled = !hasCharacter || isLeaderPosition;
+        fixedPositionCheckbox.title = isLeaderPosition
+          ? "队长已固定在该位置"
+          : hasCharacter
+            ? "勾选时固定在该位置；取消后角色位置自动，同行海报和饰品跟随角色"
+            : "请先选择角色，再设置位置自动";
         updateAdvancedSlotIcon("character", position);
         updateAdvancedSlotIcon("poster", position);
         updateAdvancedSlotIcon("accessory", position);
       }
+      updatePythonAvailability();
     };
 
     const estInfo = _("div", {
@@ -1674,19 +1824,81 @@ export default class PartyManager {
         _("text", " 使用 Python 脚本计算最优配队（仅 Electron 环境可用）"),
       ]),
     );
-    const pythonAdvancedNote = _(
+    const pythonConstraintNote = _(
       "div",
       {
         style: {
           display: "none",
           marginTop: "6px",
-          color: "#c62828",
           fontSize: "12px",
+          whiteSpace: "pre-wrap",
         },
       },
-      [_("text", "进阶设置暂不支持 Python 配队")],
     );
-    pythonSection.appendChild(pythonAdvancedNote);
+    pythonSection.appendChild(pythonConstraintNote);
+
+    const createCurrentAdvancedPythonPlan = () =>
+      createPythonAutoPartyPlan({
+        mode: "advanced",
+        characters,
+        posters,
+        leaderIdx: advancedLeaderIdx,
+        leaderPosterIdx: advancedLeaderPosterIdx,
+        constraints: {
+          mode: "advanced",
+          leaderPosition: advancedLeaderPosition,
+          characterSlots: advancedCharacterSlots,
+          characterSlotFixed: advancedCharacterSlotFixed,
+          posterSlots: advancedPosterSlots,
+          accessorySlots: advancedAccessorySlots,
+        },
+      });
+
+    updatePythonAvailability = () => {
+      if (autoPartyMode !== "advanced") {
+        pythonCheckbox.disabled = false;
+        pythonConstraintNote.style.display = "none";
+        pythonConstraintNote.textContent = "";
+        return;
+      }
+
+      const pythonPlan = createCurrentAdvancedPythonPlan();
+      if (pythonPlan.blockingErrors.length > 0) {
+        pythonCheckbox.checked = false;
+        pythonCheckbox.disabled = true;
+        pythonConstraintNote.style.display = "";
+        pythonConstraintNote.style.color = "#c62828";
+        pythonConstraintNote.textContent = pythonPlan.blockingErrors
+          .map((message) => `• ${message}`)
+          .join("\n");
+        return;
+      }
+
+      pythonCheckbox.disabled = false;
+      if (pythonPlan.ignoredAccessoryPositions.length > 0) {
+        const ignoredItems = pythonPlan.ignoredAccessoryPositions
+          .map((position) => {
+            const characterIdx = advancedCharacterSlots[position];
+            if (
+              characterIdx >= 0 &&
+              !advancedCharacterSlotFixed[position]
+            ) {
+              const characterName =
+                characters[characterIdx]?.fullCardName ||
+                `第${position + 1}行角色`;
+              return `“${characterName}”的跟随饰品`;
+            }
+            return `${position + 1}号位饰品`;
+          })
+          .join("、");
+        pythonConstraintNote.style.display = "";
+        pythonConstraintNote.style.color = "#ef6c00";
+        pythonConstraintNote.textContent = `Python 暂不支持饰品约束，将忽略：${ignoredItems}；角色和海报约束仍会生效。`;
+      } else {
+        pythonConstraintNote.style.display = "none";
+        pythonConstraintNote.textContent = "";
+      }
+    };
 
     updateAutoPartyMode = () => {
       const isAdvanced = autoPartyMode === "advanced";
@@ -1694,10 +1906,11 @@ export default class PartyManager {
       advancedModeRadio.checked = isAdvanced;
       leaderSection.style.display = isAdvanced ? "none" : "";
       advancedSection.style.display = isAdvanced ? "" : "none";
-      if (isAdvanced) pythonCheckbox.checked = false;
-      pythonCheckbox.disabled = isAdvanced;
-      pythonAdvancedNote.style.display = isAdvanced ? "" : "none";
-      if (isAdvanced) refreshAdvancedOptions();
+      if (isAdvanced) {
+        refreshAdvancedOptions();
+      } else {
+        updatePythonAvailability();
+      }
     };
 
     const perm = (n, k) =>
@@ -1790,7 +2003,7 @@ export default class PartyManager {
           charComb,
           posterComb,
           accComb,
-          leaderPositionCount: 1,
+          positionLayoutCount: 1,
           remainingText: "角色5、海报5、饰品5",
         };
       }
@@ -1805,39 +2018,42 @@ export default class PartyManager {
         errors.push("跟随队长海报已不在候选池中");
       }
 
-      const fixedCharacterIndexes = [];
+      const mandatoryCharacterIndexes = [];
       const usedCharacterIndexes = new Set();
       const usedCharacterBaseIds = new Set();
       advancedCharacterSlots.forEach((idx, position) => {
         if (idx < 0) return;
         if (!selectedChars[idx]) {
-          errors.push(`${position + 1}号位固定角色已不在候选池中`);
+          errors.push(`第${position + 1}行必选角色已不在候选池中`);
           return;
         }
         const baseId = characters[idx]?.data.CharacterBaseMasterId;
         if (usedCharacterIndexes.has(idx)) {
-          errors.push("固定角色存在重复库存对象");
+          errors.push("必选角色存在重复库存对象");
         }
         if (usedCharacterBaseIds.has(baseId)) {
-          errors.push("固定角色存在相同主角色冲突");
+          errors.push("必选角色存在相同主角色冲突");
         }
         usedCharacterIndexes.add(idx);
         usedCharacterBaseIds.add(baseId);
-        fixedCharacterIndexes.push(idx);
+        mandatoryCharacterIndexes.push(idx);
       });
       const leaderBaseId =
         characters[advancedLeaderIdx]?.data.CharacterBaseMasterId;
       if (leaderBaseId != null && usedCharacterBaseIds.has(leaderBaseId)) {
-        errors.push("固定角色不能与队长使用同一主角色");
+        errors.push("必选角色不能与队长使用同一主角色");
+      }
+      if (mandatoryCharacterIndexes.length > 4) {
+        errors.push("必选角色过多（队长之外最多选择 4 个）");
       }
 
-      const fixedPosterIndexes = [];
+      const mandatoryPosterIndexes = [];
       const usedPosterIndexes = new Set();
       const usedPosterRestrictIds = new Set();
       advancedPosterSlots.forEach((idx, position) => {
         if (idx < 0) return;
         if (!selectedPosters[idx]) {
-          errors.push(`${position + 1}号位固定海报已不在候选池中`);
+          errors.push(`第${position + 1}行海报已不在候选池中`);
           return;
         }
         const restrictId = posters[idx]?.data.OrganizeRestrictGroupId;
@@ -1849,7 +2065,7 @@ export default class PartyManager {
         }
         usedPosterIndexes.add(idx);
         if (restrictId) usedPosterRestrictIds.add(restrictId);
-        fixedPosterIndexes.push(idx);
+        mandatoryPosterIndexes.push(idx);
       });
       if (advancedLeaderPosterIdx >= 0) {
         const restrictId =
@@ -1863,53 +2079,131 @@ export default class PartyManager {
         usedPosterIndexes.add(advancedLeaderPosterIdx);
         if (restrictId) usedPosterRestrictIds.add(restrictId);
       }
+      if (
+        mandatoryPosterIndexes.length +
+          (advancedLeaderPosterIdx >= 0 ? 1 : 0) >
+        5
+      ) {
+        errors.push("必选海报过多（最多选择 5 张）");
+      }
 
-      const fixedAccessoryIndexes = [];
+      const mandatoryAccessoryIndexes = [];
       const usedAccessoryIndexes = new Set();
       advancedAccessorySlots.forEach((idx, position) => {
         if (idx < 0) return;
         if (!selectedAccs[idx]) {
-          errors.push(`${position + 1}号位固定饰品已不在候选池中`);
+          errors.push(`第${position + 1}行饰品已不在候选池中`);
           return;
         }
         if (usedAccessoryIndexes.has(idx)) {
           errors.push("固定饰品存在重复库存对象");
         }
         usedAccessoryIndexes.add(idx);
-        fixedAccessoryIndexes.push(idx);
+        mandatoryAccessoryIndexes.push(idx);
       });
 
-      let legalLeaderPositions = [];
-      if (advancedLeaderPosition >= 0) {
-        if (advancedCharacterSlots[advancedLeaderPosition] >= 0) {
-          errors.push("队长位置与固定角色冲突");
+      const fixedCharacterPositions = new Set();
+      const fixedPosterPositions = new Set();
+      const fixedAccessoryPositions = new Set();
+      const automaticCharacterRows = [];
+      advancedCharacterSlots.forEach((idx, position) => {
+        if (idx < 0) return;
+        if (advancedCharacterSlotFixed[position]) {
+          fixedCharacterPositions.add(position);
+        } else {
+          automaticCharacterRows.push(position);
         }
+      });
+      advancedPosterSlots.forEach((idx, position) => {
         if (
-          advancedLeaderPosterIdx >= 0 &&
-          advancedPosterSlots[advancedLeaderPosition] >= 0
+          idx >= 0 &&
+          (advancedCharacterSlots[position] < 0 ||
+            advancedCharacterSlotFixed[position])
         ) {
-          errors.push("队长海报与固定海报位置冲突");
+          fixedPosterPositions.add(position);
         }
+      });
+      advancedAccessorySlots.forEach((idx, position) => {
         if (
-          advancedCharacterSlots[advancedLeaderPosition] < 0 &&
-          (advancedLeaderPosterIdx < 0 ||
-            advancedPosterSlots[advancedLeaderPosition] < 0)
+          idx >= 0 &&
+          (advancedCharacterSlots[position] < 0 ||
+            advancedCharacterSlotFixed[position])
         ) {
-          legalLeaderPositions = [advancedLeaderPosition];
+          fixedAccessoryPositions.add(position);
         }
-      } else {
-        legalLeaderPositions = Array.from({ length: 5 }, (_, idx) => idx).filter(
-          (position) =>
-            advancedCharacterSlots[position] < 0 &&
-            (advancedLeaderPosterIdx < 0 ||
-              advancedPosterSlots[position] < 0),
-        );
+      });
+
+      if (
+        advancedLeaderPosition >= 0 &&
+        fixedCharacterPositions.has(advancedLeaderPosition)
+      ) {
+        errors.push("队长位置与固定角色冲突");
       }
-      if (legalLeaderPositions.length === 0) {
-        errors.push("队长或队长海报没有合法位置");
+      if (
+        advancedLeaderPosition >= 0 &&
+        advancedLeaderPosterIdx >= 0 &&
+        fixedPosterPositions.has(advancedLeaderPosition)
+      ) {
+        errors.push("队长海报与固定海报位置冲突");
       }
 
-      const characterOpenSlots = Math.max(0, 4 - fixedCharacterIndexes.length);
+      const positionAnchors = [
+        {
+          type: "leader",
+          row: -1,
+          fixedPosition: advancedLeaderPosition,
+          followsPoster: advancedLeaderPosterIdx >= 0,
+          followsAccessory: false,
+        },
+        ...automaticCharacterRows.map((row) => ({
+          type: "character",
+          row,
+          fixedPosition: -1,
+          followsPoster: advancedPosterSlots[row] >= 0,
+          followsAccessory: advancedAccessorySlots[row] >= 0,
+        })),
+      ];
+      let positionLayoutCount = 0;
+      const usedLayoutPositions = new Set(fixedCharacterPositions);
+      const visitPositionLayouts = (anchorIndex) => {
+        if (anchorIndex >= positionAnchors.length) {
+          positionLayoutCount++;
+          return;
+        }
+        const anchor = positionAnchors[anchorIndex];
+        const positions =
+          anchor.fixedPosition >= 0
+            ? [anchor.fixedPosition]
+            : [0, 1, 2, 3, 4];
+        positions.forEach((position) => {
+          if (usedLayoutPositions.has(position)) return;
+          if (anchor.followsPoster && fixedPosterPositions.has(position)) {
+            return;
+          }
+          if (
+            anchor.followsAccessory &&
+            fixedAccessoryPositions.has(position)
+          ) {
+            return;
+          }
+          usedLayoutPositions.add(position);
+          visitPositionLayouts(anchorIndex + 1);
+          usedLayoutPositions.delete(position);
+        });
+      };
+      const hasValidAdvancedLeader =
+        advancedLeaderIdx >= 0 && selectedChars[advancedLeaderIdx];
+      if (hasValidAdvancedLeader) {
+        visitPositionLayouts(0);
+      }
+      if (hasValidAdvancedLeader && positionLayoutCount === 0) {
+        errors.push("队长或位置自动角色没有合法位置布局");
+      }
+
+      const characterOpenSlots = Math.max(
+        0,
+        4 - mandatoryCharacterIndexes.length,
+      );
       const unavailableCharacterBaseIds = new Set(usedCharacterBaseIds);
       if (leaderBaseId != null) unavailableCharacterBaseIds.add(leaderBaseId);
       const availableCharacterIndexes = selectedCharIndexes.filter(
@@ -1933,7 +2227,7 @@ export default class PartyManager {
       const posterOpenSlots = Math.max(
         0,
         5 -
-          fixedPosterIndexes.length -
+          mandatoryPosterIndexes.length -
           (advancedLeaderPosterIdx >= 0 ? 1 : 0),
       );
       const compatiblePosterCount = getMaxCompatiblePosterCount(
@@ -1949,7 +2243,7 @@ export default class PartyManager {
 
       const accessoryOpenSlots = Math.max(
         0,
-        5 - fixedAccessoryIndexes.length,
+        5 - mandatoryAccessoryIndexes.length,
       );
       const availableAccessoryCount = selectedAccessoryIndexes.filter(
         (idx) => !usedAccessoryIndexes.has(idx),
@@ -1965,7 +2259,7 @@ export default class PartyManager {
         charComb: perm(availableCharacterIndexes.length, characterOpenSlots),
         posterComb: perm(compatiblePosterCount, posterOpenSlots),
         accComb: perm(availableAccessoryCount, accessoryOpenSlots),
-        leaderPositionCount: legalLeaderPositions.length,
+        positionLayoutCount,
         remainingText: `角色${characterOpenSlots}、海报${posterOpenSlots}、饰品${accessoryOpenSlots}`,
       };
     };
@@ -1973,13 +2267,13 @@ export default class PartyManager {
     updateEstimate = () => {
       const validation = getAutoPartyValidation();
       const total =
-        validation.leaderPositionCount *
+        validation.positionLayoutCount *
         validation.charComb *
         validation.posterComb *
         validation.accComb;
       const positionText =
         autoPartyMode === "advanced"
-          ? ` × 队长位置${validation.leaderPositionCount}`
+          ? ` × 位置布局${validation.positionLayoutCount}`
           : "";
       estText.textContent = `预估遍历次数: ${total.toLocaleString()} (角色${validation.charComb} × 海报${validation.posterComb} × 饰品${validation.accComb}${positionText})；剩余空位: ${validation.remainingText}`;
       if (validation.errors.length > 0) {
@@ -2408,6 +2702,7 @@ export default class PartyManager {
             mode: "basic",
             leaderPosition: -1,
             characterSlots: [-1, -1, -1, -1, -1],
+            characterSlotFixed: [true, true, true, true, true],
             posterSlots: [-1, -1, -1, -1, -1],
             accessorySlots: [-1, -1, -1, -1, -1],
           };
@@ -2419,6 +2714,7 @@ export default class PartyManager {
                 advancedCharacterSlots,
                 selCharIndexes,
               ),
+              characterSlotFixed: advancedCharacterSlotFixed.slice(),
               posterSlots: mapSlotIndexes(
                 advancedPosterSlots,
                 selPosterIndexes,
@@ -2455,7 +2751,7 @@ export default class PartyManager {
           try {
             let result;
 
-            if (autoPartyMode === "basic" && pythonCheckbox.checked) {
+            if (pythonCheckbox.checked) {
               // ===== Python 脚本配队流程 =====
               if (typeof window.electronAPI === "undefined") {
                 resultSection.style.display = "";
@@ -2463,6 +2759,19 @@ export default class PartyManager {
                   '<div style="color:red">Python 脚本配队仅在 Electron 环境下可用</div>';
                 startBtn.disabled = false;
                 return;
+              }
+              const pythonPlan = createPythonAutoPartyPlan({
+                mode: autoPartyMode,
+                characters: selChars,
+                posters: selPosters,
+                leaderIdx: selChars.indexOf(leader),
+                leaderPosterIdx: leaderPoster
+                  ? selPosters.indexOf(leaderPoster)
+                  : -1,
+                constraints,
+              });
+              if (pythonPlan.blockingErrors.length > 0) {
+                throw new Error(pythonPlan.blockingErrors.join("；"));
               }
               progressText.textContent = "Python 脚本计算中...";
               progressFill.style.width = "0%";
@@ -2502,6 +2811,7 @@ export default class PartyManager {
                 selAccs,
                 leader,
                 leaderPoster,
+                rowConstraints: pythonPlan.rowConstraints,
                 workerCount,
                 saThreshold,
                 batchReader: async (processBatch) => {
@@ -2609,10 +2919,19 @@ export default class PartyManager {
                       effects_data: userData.effects_data.length,
                     });
                     console.log("userData:", userData);
+                    console.log(
+                      "formationOptions:",
+                      pythonPlan.formationOptions,
+                    );
                     console.groupEnd();
 
-                    const formationDone = window.electronAPI
-                      .runFormation(userData)
+                    const formationRequest = pythonPlan.formationOptions
+                      ? window.electronAPI.runFormation(
+                        userData,
+                        pythonPlan.formationOptions,
+                      )
+                      : window.electronAPI.runFormation(userData);
+                    const formationDone = formationRequest
                       .then(() => {
                         console.log(
                           `[PartyManager] Python process closed, finReceived=${finReceived}`,
@@ -2862,6 +3181,7 @@ export default class PartyManager {
     dialog.appendChild(resultSection);
     dialog.appendChild(btnRow);
     overlay.appendChild(dialog);
+    overlay.appendChild(hoverPreviewButton);
     updateAutoPartyMode();
     updateEstimate();
     saveState();

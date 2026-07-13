@@ -434,7 +434,9 @@ async function runSearch(params) {
 
     console.log(`Worker ${workerId}: CPU two-phase mode`, {
       groups: plan.groups.length,
-      accessoryPermutations: plan.accessoryPermutations.length,
+      accessoryPermutationCounts: plan.groups.map(
+        (group) => group.accessoryPermutations.length,
+      ),
       total,
       chunkStart: startIdx,
       chunkEnd: endIdx,

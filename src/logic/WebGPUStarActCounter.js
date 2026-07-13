@@ -1153,15 +1153,15 @@ export default class WebGPUStarActCounter {
   }
 
   /**
-   * 对按队长位置拆分的排列池使用同一个全局 SA 阈值进行筛选。
+   * 对按约束布局拆分的排列池使用同一个全局 SA 阈值进行筛选。
    * 固定槽位与队长海报已经写入完整五槽排列，因此无需修改 WGSL。
    *
    * @param {Object} params
    * @param {Array<{
    *   characterPermutations: Array<Array<number>>,
    *   posterPermutations: Array<Array<number>>,
+   *   accessoryPermutations: Array<Array<number>>,
    * }>} params.groups
-   * @param {Array<Array<number>>} params.accessoryPermutations
    * @returns {Promise<{
    *   candidates: Array<{groupIdx:number, cpIdx:number, ppIdx:number, apIdx:number}>,
    *   maxCount: number,
@@ -1173,12 +1173,11 @@ export default class WebGPUStarActCounter {
   async computeFilteredPoolGroups(params, thresholdOffset = 1) {
     const {
       groups = [],
-      accessoryPermutations = [],
       onGroupProgress = null,
       ...commonParams
     } = params;
 
-    if (groups.length === 0 || accessoryPermutations.length === 0) {
+    if (groups.length === 0) {
       return {
         candidates: [],
         maxCount: 0,
@@ -1197,7 +1196,12 @@ export default class WebGPUStarActCounter {
       const group = groups[groupIdx];
       const charPerms = group.characterPermutations || [];
       const posterPerms = group.posterPermutations || [];
-      if (charPerms.length === 0 || posterPerms.length === 0) {
+      const accessoryPermutations = group.accessoryPermutations || [];
+      if (
+        charPerms.length === 0 ||
+        posterPerms.length === 0 ||
+        accessoryPermutations.length === 0
+      ) {
         groupCounts[groupIdx] = new Uint32Array(0);
         continue;
       }
@@ -1237,7 +1241,7 @@ export default class WebGPUStarActCounter {
     groupCounts.forEach((counts, groupIdx) => {
       const group = groups[groupIdx];
       const posterPermCount = group.posterPermutations.length;
-      const accPermCount = accessoryPermutations.length;
+      const accPermCount = group.accessoryPermutations.length;
       const posterAccCount = posterPermCount * accPermCount;
       for (let i = 0; i < counts.length; i++) {
         if (counts[i] < threshold) continue;
