@@ -47,9 +47,11 @@ describe("createPythonAutoPartyPlan", () => {
         characterSlots: emptySlots(),
         characterSlotFixed: [true, true, true, true, true],
         posterSlots: emptySlots(),
+        posterSlotBound: [false, false, false, false, false],
         posterBindings: emptySlots(),
       },
       ignoredAccessoryPositions: [],
+      unboundPosterPositions: [],
       blockingErrors: [],
     });
   });
@@ -96,6 +98,7 @@ describe("createPythonAutoPartyPlan", () => {
       characterSlots: constraints.characterSlots,
       characterSlotFixed: [true, true, true, true, true],
       posterSlots: constraints.posterSlots,
+      posterSlotBound: [false, true, false, false, false],
       posterBindings: [-1, 1, -1, -1, -1],
     });
     expect(plan.ignoredAccessoryPositions).toEqual([2, 4]);
@@ -203,7 +206,7 @@ describe("createPythonAutoPartyPlan", () => {
     ]);
   });
 
-  test("fixed poster without a same-position character blocks Python", () => {
+  test("poster without a same-position character uses binding zero", () => {
     const plan = createPythonAutoPartyPlan({
       mode: "advanced",
       characters: [character(101)],
@@ -216,13 +219,57 @@ describe("createPythonAutoPartyPlan", () => {
       }),
     });
 
-    expect(plan.blockingErrors).toContain(
-      "第 4 位的固定海报无法绑定角色，请固定同位置角色或将队长固定到该位置",
-    );
-    expect(plan.formationOptions.mandatoryPosters).toEqual(emptySlots().flatMap(
-      () => [0, 0],
-    ).slice(0, 10));
+    expect(plan.blockingErrors).toEqual([]);
+    expect(plan.formationOptions.mandatoryPosters).toEqual([
+      201, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+    expect(plan.rowConstraints.posterBindings).toEqual(emptySlots());
+    expect(plan.unboundPosterPositions).toEqual([3]);
     expect(plan.ignoredAccessoryPositions).toEqual([2]);
+  });
+
+  test("an explicitly unbound poster uses binding zero even with a same-row character", () => {
+    const plan = createPythonAutoPartyPlan({
+      mode: "advanced",
+      characters: [character(101), character(102)],
+      posters: [poster(201)],
+      leaderIdx: 0,
+      constraints: advancedConstraints({
+        characterSlots: [-1, 1, -1, -1, -1],
+        posterSlots: [-1, 0, -1, -1, -1],
+        posterSlotBound: [false, false, false, false, false],
+      }),
+    });
+
+    expect(plan.formationOptions.mandatoryPosters.slice(0, 2)).toEqual([
+      201, 0,
+    ]);
+    expect(plan.rowConstraints.posterSlotBound).toEqual([
+      false, false, false, false, false,
+    ]);
+    expect(plan.rowConstraints.posterBindings).toEqual(emptySlots());
+    expect(plan.unboundPosterPositions).toEqual([1]);
+    expect(plan.blockingErrors).toEqual([]);
+  });
+
+  test("an explicitly bound poster without a target blocks Python", () => {
+    const plan = createPythonAutoPartyPlan({
+      mode: "advanced",
+      characters: [character(101)],
+      posters: [poster(201)],
+      leaderIdx: 0,
+      constraints: advancedConstraints({
+        posterSlots: [-1, 0, -1, -1, -1],
+        posterSlotBound: [false, true, false, false, false],
+      }),
+    });
+
+    expect(plan.blockingErrors).toContain(
+      "第 2 位海报已设置绑定，但没有可绑定的角色",
+    );
+    expect(plan.formationOptions.mandatoryPosters).toEqual([
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
   });
 
   test("candidate IDs can fall back to data.Id", () => {
@@ -366,6 +413,40 @@ describe("resolvePythonFormationRow", () => {
     expect(resolved).toEqual({
       charPerm: [2, 3, 0, 4, 5],
       posterPerm: [2, 3, 0, 4, 5],
+      accessoryIds: [301, 302, 303, 304, 305],
+    });
+  });
+
+  test("advanced mode accepts an unbound mandatory poster at any position", () => {
+    const plan = createPythonAutoPartyPlan({
+      mode: "advanced",
+      characters,
+      posters,
+      leaderIdx: 0,
+      leaderPosterIdx: -1,
+      constraints: advancedConstraints({
+        leaderPosition: 2,
+        posterSlots: [1, -1, -1, -1, -1],
+      }),
+    });
+    const resolved = resolvePythonFormationRow({
+      row: [
+        102, 103, 101, 104, 105,
+        201, 203, 204, 205, 202,
+        301, 302, 303, 304, 305,
+      ],
+      characters,
+      posters,
+      rowConstraints: plan.rowConstraints,
+    });
+
+    expect(plan.formationOptions.mandatoryPosters.slice(0, 2)).toEqual([
+      202, 0,
+    ]);
+    expect(plan.unboundPosterPositions).toEqual([0]);
+    expect(resolved).toEqual({
+      charPerm: [1, 2, 0, 3, 4],
+      posterPerm: [0, 2, 3, 4, 1],
       accessoryIds: [301, 302, 303, 304, 305],
     });
   });

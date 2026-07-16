@@ -70,6 +70,35 @@ function normalizeCharacterSlotFixed(value, characterSlots, blockingErrors) {
   );
 }
 
+function normalizePosterSlotBound({
+  value,
+  posterSlots,
+  characterSlots,
+  leaderPosition,
+  blockingErrors,
+}) {
+  const inferred = posterSlots.map(
+    (posterIndex, position) =>
+      posterIndex >= 0 &&
+      (characterSlots[position] >= 0 || leaderPosition === position),
+  );
+  if (value === undefined) return inferred;
+  if (
+    !Array.isArray(value) ||
+    value.length !== PARTY_SIZE ||
+    !value.every((bound) => typeof bound === "boolean")
+  ) {
+    addBlockingError(
+      blockingErrors,
+      "海报绑定状态必须包含 5 个布尔值",
+    );
+    return inferred;
+  }
+  return value.map((bound, position) =>
+    posterSlots[position] < 0 ? false : bound,
+  );
+}
+
 function getCandidate({ candidates, index, label, position, blockingErrors }) {
   if (
     !Number.isInteger(index) ||
@@ -226,6 +255,7 @@ function createRowConstraints({
   characterSlots,
   characterSlotFixed,
   posterSlots,
+  posterSlotBound,
   posterBindings,
 }) {
   return {
@@ -236,6 +266,7 @@ function createRowConstraints({
     characterSlots: characterSlots.slice(),
     characterSlotFixed: characterSlotFixed.slice(),
     posterSlots: posterSlots.slice(),
+    posterSlotBound: posterSlotBound.slice(),
     posterBindings: posterBindings.slice(),
   };
 }
@@ -283,9 +314,11 @@ export function createPythonAutoPartyPlan({
         characterSlots: emptySlots(),
         characterSlotFixed: fixedSlots(),
         posterSlots: emptySlots(),
+        posterSlotBound: new Array(PARTY_SIZE).fill(false),
         posterBindings: emptySlots(),
       }),
       ignoredAccessoryPositions: [],
+      unboundPosterPositions: [],
       blockingErrors,
     };
   }
@@ -321,6 +354,13 @@ export function createPythonAutoPartyPlan({
     characterSlots,
     characterSlotFixed,
     posterSlots,
+    blockingErrors,
+  });
+  const posterSlotBound = normalizePosterSlotBound({
+    value: constraints?.posterSlotBound,
+    posterSlots,
+    characterSlots,
+    leaderPosition: effectiveLeaderPosition,
     blockingErrors,
   });
 
@@ -385,6 +425,7 @@ export function createPythonAutoPartyPlan({
   const usedPosterIds = new Set();
   const usedPosterBindings = new Set();
   const posterBindings = emptySlots();
+  const unboundPosterPositions = [];
   const leaderPosterId =
     leaderPosterIdx >= 0
       ? getIntegerCandidateId({
@@ -432,17 +473,34 @@ export function createPythonAutoPartyPlan({
     });
     if (id === null) return;
 
+    if (!posterSlotBound[position]) {
+      const before = posterPairs.length;
+      pushUniquePair({
+        pairs: posterPairs,
+        usedCandidateIndices: usedPosterIndices,
+        usedIds: usedPosterIds,
+        candidateIndex,
+        id,
+        pairValue: 0,
+        duplicateMessage: `第 ${position + 1} 位的固定海报重复`,
+        blockingErrors,
+      });
+      if (posterPairs.length > before) {
+        unboundPosterPositions.push(position);
+      }
+      return;
+    }
+
     let bindingCharacterIndex = -1;
     if (characterSlots[position] >= 0) {
       bindingCharacterIndex = characterSlots[position];
     } else if (effectiveLeaderPosition === position) {
       bindingCharacterIndex = leaderIdx;
     }
-
     if (bindingCharacterIndex < 0) {
       addBlockingError(
         blockingErrors,
-        `第 ${position + 1} 位的固定海报无法绑定角色，请固定同位置角色或将队长固定到该位置`,
+        `第 ${position + 1} 位海报已设置绑定，但没有可绑定的角色`,
       );
       return;
     }
@@ -507,9 +565,11 @@ export function createPythonAutoPartyPlan({
       characterSlots,
       characterSlotFixed,
       posterSlots,
+      posterSlotBound,
       posterBindings,
     }),
     ignoredAccessoryPositions,
+    unboundPosterPositions,
     blockingErrors,
   };
 }
@@ -684,11 +744,12 @@ function pinFloatingCharacterSlots({
   return true;
 }
 
-function pinBoundPosters({
+function pinConfiguredPosters({
   pinned,
   posterSlots,
   posterBindings,
   characterPermutation,
+  posterIds,
   posters,
 }) {
   for (let sourcePosition = 0; sourcePosition < PARTY_SIZE; sourcePosition++) {
@@ -698,15 +759,23 @@ function pinBoundPosters({
       if (bindingCharacterIndex >= 0) return false;
       continue;
     }
-    if (
-      posterIndex >= posters.length ||
-      bindingCharacterIndex < 0
-    ) {
-      return false;
+    if (posterIndex >= posters.length) return false;
+
+    let resolvedPosition = -1;
+    if (bindingCharacterIndex >= 0) {
+      resolvedPosition = characterPermutation.indexOf(
+        bindingCharacterIndex,
+      );
+    } else {
+      const selectedPosterId = posterId(posters[posterIndex]);
+      if (!Number.isInteger(selectedPosterId)) return false;
+      resolvedPosition = findAvailableIdPosition(
+        posterIds,
+        selectedPosterId,
+        pinned,
+        posterIndex,
+      );
     }
-    const resolvedPosition = characterPermutation.indexOf(
-      bindingCharacterIndex,
-    );
     if (
       resolvedPosition < 0 ||
       !pinCandidate(pinned, resolvedPosition, posterIndex)
@@ -849,11 +918,12 @@ export function resolvePythonFormationRow({
   let normalizedPosterIds = rawPosterIds;
   if (mode === "advanced") {
     if (
-      !pinBoundPosters({
+      !pinConfiguredPosters({
         pinned: posterPins,
         posterSlots,
         posterBindings,
         characterPermutation: charPerm,
+        posterIds: rawPosterIds,
         posters,
       })
     ) {

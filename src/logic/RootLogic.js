@@ -2518,6 +2518,15 @@ export default class RootLogic {
       posterSlots: new Array(5)
         .fill(-1)
         .map((_, i) => normalizeSlotIndex(constraints?.posterSlots?.[i])),
+      posterSlotBound: new Array(5).fill(false).map((_, i) =>
+        typeof constraints?.posterSlotBound?.[i] === "boolean"
+          ? constraints.posterSlotBound[i]
+          : Boolean(
+            normalizeSlotIndex(constraints?.posterSlots?.[i]) >= 0 &&
+              (normalizeSlotIndex(constraints?.characterSlots?.[i]) >= 0 ||
+                constraints?.leaderPosition === i),
+          ),
+      ),
       accessorySlots: new Array(5)
         .fill(-1)
         .map((_, i) => normalizeSlotIndex(constraints?.accessorySlots?.[i])),

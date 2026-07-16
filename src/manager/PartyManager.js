@@ -1,6 +1,7 @@
 import Party from "./Party";
 import ConstText from "../db/ConstText";
 import GameDb from "../db/GameDb";
+import { createAutoPartyImportPlan } from "../logic/AutoPartyImportPlanner";
 import { createPythonAutoPartyPlan } from "../logic/PythonAutoPartyConstraints";
 
 import _ from "../createElement";
@@ -548,12 +549,16 @@ export default class PartyManager {
     let savedLeaderPosterId = null;
     let savedMode = "basic";
     let savedAdvancedState = null;
+    let savedAutoPartyStateVersion = 0;
     let hasSavedState = false;
 
     try {
       const raw = localStorage.getItem("autoPartyState");
       if (raw) {
         const data = JSON.parse(raw);
+        savedAutoPartyStateVersion = Number.isInteger(data.version)
+          ? data.version
+          : 0;
         hasSavedState = true;
         (data.chars || []).forEach((id) => savedChars.add(id));
         (data.posters || []).forEach((id) => savedPosters.add(id));
@@ -676,9 +681,38 @@ export default class PartyManager {
     const advancedCharacterSlotFixed = restoreCharacterSlotFixed(
       savedAdvancedState?.characterSlotFixed,
     );
+    const inferPosterSlotBound = () =>
+      advancedPosterSlots.map(
+        (posterIdx, position) =>
+          posterIdx >= 0 &&
+          (advancedCharacterSlots[position] >= 0 ||
+            advancedLeaderPosition === position),
+      );
+    const restorePosterSlotBound = (value) => {
+      if (
+        savedAutoPartyStateVersion < 4 ||
+        !Array.isArray(value) ||
+        value.length !== 5 ||
+        !value.every((bound) => typeof bound === "boolean")
+      ) {
+        return inferPosterSlotBound();
+      }
+      return value.map((bound, position) =>
+        advancedPosterSlots[position] < 0 ? false : bound,
+      );
+    };
+    const advancedPosterSlotBound = restorePosterSlotBound(
+      savedAdvancedState?.posterSlotBound,
+    );
+    const hasAdvancedPosterBindingTarget = (position) =>
+      advancedCharacterSlots[position] >= 0 ||
+      (advancedLeaderIdx >= 0 && advancedLeaderPosition === position);
     const clearAdvancedCharacterSlot = (position) => {
       advancedCharacterSlots[position] = -1;
       advancedCharacterSlotFixed[position] = true;
+      if (advancedPosterSlots[position] >= 0) {
+        advancedPosterSlotBound[position] = false;
+      }
     };
     advancedCharacterSlots.forEach((idx, position) => {
       if (idx < 0) advancedCharacterSlotFixed[position] = true;
@@ -690,7 +724,7 @@ export default class PartyManager {
 
     const saveState = () => {
       const data = {
-        version: 3,
+        version: 4,
         mode: autoPartyMode,
         chars: characters
           .filter((_, i) => selectedChars[i])
@@ -723,6 +757,7 @@ export default class PartyManager {
           posterSlots: advancedPosterSlots.map((idx) =>
             createInventoryRef(posters[idx], root.appState.posters),
           ),
+          posterSlotBound: advancedPosterSlotBound.slice(),
           accessorySlots: advancedAccessorySlots.map((idx) =>
             createInventoryRef(accessories[idx], root.appState.accessories),
           ),
@@ -853,6 +888,7 @@ export default class PartyManager {
 
     let refreshAdvancedOptions = () => {};
     let cleanupAdvancedReferences = () => {};
+    let importCurrentPartyToAdvanced = () => {};
     let updateAutoPartyMode = () => {};
     let updatePythonAvailability = () => {};
     let updateEstimate = () => {};
@@ -999,6 +1035,7 @@ export default class PartyManager {
       style: { width: "100%", marginBottom: "8px" },
       event: {
         change: (e) => {
+          const previousLeaderPosition = advancedLeaderPosition;
           advancedLeaderIdx = parseInt(e.target.value);
           if (!Number.isInteger(advancedLeaderIdx) || advancedLeaderIdx < 0) {
             advancedLeaderIdx = -1;
@@ -1017,6 +1054,17 @@ export default class PartyManager {
           }
           if (advancedLeaderPosition >= 0) {
             clearAdvancedCharacterSlot(advancedLeaderPosition);
+            if (advancedPosterSlots[advancedLeaderPosition] >= 0) {
+              advancedPosterSlotBound[advancedLeaderPosition] = true;
+            }
+          }
+          if (
+            previousLeaderPosition >= 0 &&
+            previousLeaderPosition !== advancedLeaderPosition &&
+            advancedCharacterSlots[previousLeaderPosition] < 0 &&
+            advancedPosterSlots[previousLeaderPosition] >= 0
+          ) {
+            advancedPosterSlotBound[previousLeaderPosition] = false;
           }
           refreshAdvancedOptions();
           updateEstimate();
@@ -1045,6 +1093,7 @@ export default class PartyManager {
                   fixedPoster?.data.OrganizeRestrictGroupId === restrictId)
               ) {
                 advancedPosterSlots[position] = -1;
+                advancedPosterSlotBound[position] = false;
               }
             });
           }
@@ -1053,6 +1102,7 @@ export default class PartyManager {
             advancedLeaderPosition >= 0
           ) {
             advancedPosterSlots[advancedLeaderPosition] = -1;
+            advancedPosterSlotBound[advancedLeaderPosition] = false;
           }
           refreshAdvancedOptions();
           updateEstimate();
@@ -1088,11 +1138,23 @@ export default class PartyManager {
         event: {
           change: () => {
             if (!radio.checked) return;
+            const previousPosition = advancedLeaderPosition;
             advancedLeaderPosition = position;
+            if (
+              previousPosition >= 0 &&
+              previousPosition !== position &&
+              advancedCharacterSlots[previousPosition] < 0 &&
+              advancedPosterSlots[previousPosition] >= 0
+            ) {
+              advancedPosterSlotBound[previousPosition] = false;
+            }
             if (position >= 0) {
               clearAdvancedCharacterSlot(position);
               if (advancedLeaderPosterIdx >= 0) {
                 advancedPosterSlots[position] = -1;
+                advancedPosterSlotBound[position] = false;
+              } else if (advancedPosterSlots[position] >= 0) {
+                advancedPosterSlotBound[position] = true;
               }
             }
             refreshAdvancedOptions();
@@ -1120,6 +1182,7 @@ export default class PartyManager {
       accessory: [],
     };
     const advancedCharacterSlotFixedInputs = [];
+    const advancedPosterSlotBoundInputs = [];
     const advancedSlotsByType = {
       character: advancedCharacterSlots,
       poster: advancedPosterSlots,
@@ -1161,6 +1224,7 @@ export default class PartyManager {
           clearAdvancedCharacterSlot(position);
         } else {
           slots[position] = -1;
+          if (type === "poster") advancedPosterSlotBound[position] = false;
         }
       } else {
         slots.forEach((idx, otherPosition) => {
@@ -1183,11 +1247,20 @@ export default class PartyManager {
             clearAdvancedCharacterSlot(otherPosition);
           } else {
             slots[otherPosition] = -1;
+            if (type === "poster") {
+              advancedPosterSlotBound[otherPosition] = false;
+            }
           }
         });
         slots[position] = parsedValue;
         if (type === "character" && previousValue !== parsedValue) {
           advancedCharacterSlotFixed[position] = true;
+          if (advancedPosterSlots[position] >= 0) {
+            advancedPosterSlotBound[position] = true;
+          }
+        } else if (type === "poster" && previousValue !== parsedValue) {
+          advancedPosterSlotBound[position] =
+            hasAdvancedPosterBindingTarget(position);
         }
       }
       refreshAdvancedOptions();
@@ -1341,12 +1414,20 @@ export default class PartyManager {
     const advancedSlotsGrid = _("div", {
       style: {
         display: "grid",
-        gridTemplateColumns: "90px 72px repeat(3, minmax(90px, 1fr))",
+        gridTemplateColumns:
+          "90px 72px minmax(90px, 1fr) 72px repeat(2, minmax(90px, 1fr))",
         gap: "8px",
         alignItems: "center",
       },
     });
-    ["队长 / 位置", "固定位置", "必选角色", "海报", "饰品"].forEach((label) => {
+    [
+      "队长 / 位置",
+      "固定位置",
+      "必选角色",
+      "是否绑定",
+      "海报",
+      "饰品",
+    ].forEach((label) => {
       advancedSlotsGrid.appendChild(
         _("div", { style: { fontWeight: "bold", textAlign: "center" } }, [_("text", label)]),
       );
@@ -1398,7 +1479,7 @@ export default class PartyManager {
           [fixedPositionCheckbox],
         ),
       );
-      ["character", "poster", "accessory"].forEach((type) => {
+      const appendAdvancedSlotIcon = (type) => {
         const meta = advancedSlotMeta[type];
         const icon = _("span", {
           className: meta.spriteClass,
@@ -1422,7 +1503,45 @@ export default class PartyManager {
         });
         advancedSlotIcons[type][position] = icon;
         rowChildren.push(icon);
+      };
+      appendAdvancedSlotIcon("character");
+      const posterBoundCheckbox = _("input", {
+        type: "checkbox",
+        title: "勾选后海报跟随同行角色；取消后海报只要求入队，位置由算法决定",
+        event: {
+          change: () => {
+            const hasPoster = advancedPosterSlots[position] >= 0;
+            const hasTarget = hasAdvancedPosterBindingTarget(position);
+            const isDerived = isAdvancedDerivedSlot("poster", position);
+            if (!hasPoster || !hasTarget || isDerived) {
+              advancedPosterSlotBound[position] = isDerived;
+              posterBoundCheckbox.checked = isDerived;
+              return;
+            }
+            advancedPosterSlotBound[position] = posterBoundCheckbox.checked;
+            refreshAdvancedOptions();
+            updateEstimate();
+            saveState();
+          },
+        },
       });
+      advancedPosterSlotBoundInputs[position] = posterBoundCheckbox;
+      rowChildren.push(
+        _(
+          "label",
+          {
+            style: {
+              display: "flex",
+              justifyContent: "center",
+              alignItems: "center",
+            },
+            title: posterBoundCheckbox.title,
+          },
+          [posterBoundCheckbox],
+        ),
+      );
+      appendAdvancedSlotIcon("poster");
+      appendAdvancedSlotIcon("accessory");
       advancedSlotsGrid.appendChild(
         _(
           "div",
@@ -1438,14 +1557,21 @@ export default class PartyManager {
         { style: { marginTop: "6px", color: "#666", fontSize: "12px" } },
         [_(
           "text",
-          "点击图标选择必选项；取消“固定位置”后，该行角色位置自动，同行海报和饰品跟随角色。蓝色高亮槽跟随队长。",
+          "点击图标选择必选项；取消“固定位置”后，该行角色位置自动。取消海报“是否绑定”后，海报仍必定入队，但不保证位置。饰品跟随规则保持不变，蓝色高亮槽跟随队长。",
         )],
       ),
     );
+    const importCurrentPartyBtn = _("input", {
+      type: "button",
+      value: "导入当前编队",
+      title: "清空当前候选池，并将当前编队导入进阶设置",
+      event: {
+        click: () => importCurrentPartyToAdvanced(),
+      },
+    });
     const clearAdvancedBtn = _("input", {
       type: "button",
       value: "清空进阶设置",
-      style: { marginTop: "10px" },
       event: {
         click: () => {
           advancedLeaderIdx = -1;
@@ -1454,6 +1580,7 @@ export default class PartyManager {
           advancedCharacterSlots.fill(-1);
           advancedCharacterSlotFixed.fill(true);
           advancedPosterSlots.fill(-1);
+          advancedPosterSlotBound.fill(false);
           advancedAccessorySlots.fill(-1);
           refreshAdvancedOptions();
           updateEstimate();
@@ -1461,7 +1588,20 @@ export default class PartyManager {
         },
       },
     });
-    advancedSection.appendChild(clearAdvancedBtn);
+    advancedSection.appendChild(
+      _(
+        "div",
+        {
+          style: {
+            display: "flex",
+            gap: "8px",
+            alignItems: "center",
+            marginTop: "10px",
+          },
+        },
+        [importCurrentPartyBtn, clearAdvancedBtn],
+      ),
+    );
 
     cleanupAdvancedReferences = () => {
       if (advancedLeaderIdx < 0 || !selectedChars[advancedLeaderIdx]) {
@@ -1480,7 +1620,12 @@ export default class PartyManager {
         }
       });
       advancedPosterSlots.forEach((idx, position) => {
-        if (idx < 0 || !selectedPosters[idx]) advancedPosterSlots[position] = -1;
+        if (idx < 0 || !selectedPosters[idx]) {
+          advancedPosterSlots[position] = -1;
+          advancedPosterSlotBound[position] = false;
+        } else if (!hasAdvancedPosterBindingTarget(position)) {
+          advancedPosterSlotBound[position] = false;
+        }
       });
       advancedAccessorySlots.forEach((idx, position) => {
         if (idx < 0 || !selectedAccs[idx]) advancedAccessorySlots[position] = -1;
@@ -1511,6 +1656,11 @@ export default class PartyManager {
       if (item) {
         if (derived) {
           stateLabel = `${type === "character" ? "队长" : "队长海报"}：${meta.name(item)}`;
+        } else if (
+          type === "poster" &&
+          !advancedPosterSlotBound[position]
+        ) {
+          stateLabel = `必选（位置自由）：${meta.name(item)}`;
         } else if (!advancedCharacterSlotFixed[position]) {
           stateLabel = `${
             type === "character" ? "必选（位置自动）" : "跟随角色"
@@ -1528,11 +1678,13 @@ export default class PartyManager {
       icon.style.borderRadius = "10px";
       icon.style.boxShadow = derived
         ? "0 0 0 3px rgba(33, 150, 243, 0.45)"
-        : item && !advancedCharacterSlotFixed[position]
-          ? "0 0 0 2px rgba(0, 150, 136, 0.35)"
-          : item
-            ? "0 0 0 2px rgba(63, 81, 181, 0.25)"
-            : "";
+        : type === "poster" && item && !advancedPosterSlotBound[position]
+          ? "0 0 0 2px rgba(239, 108, 0, 0.5)"
+          : item && !advancedCharacterSlotFixed[position]
+            ? "0 0 0 2px rgba(0, 150, 136, 0.35)"
+            : item
+              ? "0 0 0 2px rgba(63, 81, 181, 0.25)"
+              : "";
       if (derived) {
         icon.setAttribute("aria-disabled", "true");
         icon.setAttribute("tabindex", "-1");
@@ -1595,6 +1747,27 @@ export default class PartyManager {
           : hasCharacter
             ? "勾选时固定在该位置；取消后角色位置自动，同行海报和饰品跟随角色"
             : "请先选择角色，再设置位置自动";
+        const posterBoundCheckbox = advancedPosterSlotBoundInputs[position];
+        const hasPoster = advancedPosterSlots[position] >= 0;
+        const isDerivedPoster = isAdvancedDerivedSlot("poster", position);
+        const hasPosterTarget = hasAdvancedPosterBindingTarget(position);
+        if (!hasPoster || !hasPosterTarget) {
+          advancedPosterSlotBound[position] = false;
+        }
+        posterBoundCheckbox.checked = isDerivedPoster
+          ? true
+          : advancedPosterSlotBound[position];
+        posterBoundCheckbox.disabled =
+          isDerivedPoster || !hasPoster || !hasPosterTarget;
+        posterBoundCheckbox.title = isDerivedPoster
+          ? "队长海报始终跟随队长"
+          : !hasPoster
+            ? "请先选择海报"
+            : !hasPosterTarget
+              ? "同行没有可绑定的角色"
+              : advancedPosterSlotBound[position]
+                ? "海报会跟随同行角色的最终位置"
+                : "海报作为必选项，但位置由算法决定";
         updateAdvancedSlotIcon("character", position);
         updateAdvancedSlotIcon("poster", position);
         updateAdvancedSlotIcon("accessory", position);
@@ -1850,6 +2023,7 @@ export default class PartyManager {
           characterSlots: advancedCharacterSlots,
           characterSlotFixed: advancedCharacterSlotFixed,
           posterSlots: advancedPosterSlots,
+          posterSlotBound: advancedPosterSlotBound,
           accessorySlots: advancedAccessorySlots,
         },
       });
@@ -1875,6 +2049,10 @@ export default class PartyManager {
       }
 
       pythonCheckbox.disabled = false;
+      const warningMessages = pythonPlan.unboundPosterPositions.map(
+        (position) =>
+          `• 第${position + 1}号位海报在 Python 配队中将作为必选海报处理，但不保证位置。`,
+      );
       if (pythonPlan.ignoredAccessoryPositions.length > 0) {
         const ignoredItems = pythonPlan.ignoredAccessoryPositions
           .map((position) => {
@@ -1891,12 +2069,17 @@ export default class PartyManager {
             return `${position + 1}号位饰品`;
           })
           .join("、");
-        pythonConstraintNote.style.display = "";
-        pythonConstraintNote.style.color = "#ef6c00";
-        pythonConstraintNote.textContent = `Python 暂不支持饰品约束，将忽略：${ignoredItems}；角色和海报约束仍会生效。`;
-      } else {
+        warningMessages.push(
+          `• Python 暂不支持饰品约束，将忽略：${ignoredItems}；角色和海报约束仍会生效。`,
+        );
+      }
+      if (warningMessages.length === 0) {
         pythonConstraintNote.style.display = "none";
         pythonConstraintNote.textContent = "";
+      } else {
+        pythonConstraintNote.style.display = "";
+        pythonConstraintNote.style.color = "#ef6c00";
+        pythonConstraintNote.textContent = warningMessages.join("\n");
       }
     };
 
@@ -2066,6 +2249,12 @@ export default class PartyManager {
         usedPosterIndexes.add(idx);
         if (restrictId) usedPosterRestrictIds.add(restrictId);
         mandatoryPosterIndexes.push(idx);
+        if (
+          advancedPosterSlotBound[position] &&
+          !hasAdvancedPosterBindingTarget(position)
+        ) {
+          errors.push(`第${position + 1}行海报已设置绑定，但没有可绑定角色`);
+        }
       });
       if (advancedLeaderPosterIdx >= 0) {
         const restrictId =
@@ -2117,6 +2306,7 @@ export default class PartyManager {
       advancedPosterSlots.forEach((idx, position) => {
         if (
           idx >= 0 &&
+          advancedPosterSlotBound[position] &&
           (advancedCharacterSlots[position] < 0 ||
             advancedCharacterSlotFixed[position])
         ) {
@@ -2159,7 +2349,9 @@ export default class PartyManager {
           type: "character",
           row,
           fixedPosition: -1,
-          followsPoster: advancedPosterSlots[row] >= 0,
+          followsPoster:
+            advancedPosterSlots[row] >= 0 &&
+            advancedPosterSlotBound[row],
           followsAccessory: advancedAccessorySlots[row] >= 0,
         })),
       ];
@@ -2290,6 +2482,7 @@ export default class PartyManager {
 
     updateStartBtnState = () => {
       const validation = getAutoPartyValidation();
+      importCurrentPartyBtn.disabled = isAutoPartyCalculating;
       if (isAutoPartyCalculating) {
         startBtn.disabled = true;
         startBtn.value = "计算中...";
@@ -2551,6 +2744,155 @@ export default class PartyManager {
     });
     accSection.appendChild(accGrid);
 
+    const replaceCandidateFlags = (target, source, length) => {
+      target.splice(
+        0,
+        target.length,
+        ...Array.from({ length }, (_, idx) => Boolean(source?.[idx])),
+      );
+    };
+    const syncCandidateCheckboxes = (
+      section,
+      dataAttribute,
+      selectAllCheckbox,
+      flags,
+    ) => {
+      section
+        .querySelectorAll(`input[type=checkbox][${dataAttribute}]`)
+        .forEach((checkbox) => {
+          const idx = parseInt(checkbox.getAttribute(dataAttribute));
+          checkbox.checked = Number.isInteger(idx) && Boolean(flags[idx]);
+        });
+      const hasSelected = flags.some(Boolean);
+      const hasUnselected = flags.some((selected) => !selected);
+      selectAllCheckbox.checked = hasSelected && !hasUnselected;
+      selectAllCheckbox.indeterminate = hasSelected && hasUnselected;
+    };
+    const replaceAdvancedSlots = (target, source, fallback) => {
+      for (let position = 0; position < 5; position++) {
+        target[position] = source?.[position] ?? fallback;
+      }
+    };
+    const formatSkippedImportItem = ({ type, position }) => {
+      const typeLabel = {
+        character: "角色",
+        poster: "海报",
+        accessory: "饰品",
+      }[type];
+      const positionLabel = Number.isInteger(position)
+        ? `${position + 1}号位`
+        : "未知位置";
+      return `${positionLabel}${typeLabel || "项目"}`;
+    };
+
+    importCurrentPartyToAdvanced = () => {
+      if (isAutoPartyCalculating) return;
+
+      const party = this.currentParty;
+      const importPlan = createAutoPartyImportPlan({
+        party,
+        characters,
+        posters,
+        accessories,
+      });
+
+      replaceCandidateFlags(
+        selectedChars,
+        importPlan.selectedCharacters,
+        characters.length,
+      );
+      replaceCandidateFlags(
+        selectedPosters,
+        importPlan.selectedPosters,
+        posters.length,
+      );
+      replaceCandidateFlags(
+        selectedAccs,
+        importPlan.selectedAccessories,
+        accessories.length,
+      );
+      syncCandidateCheckboxes(
+        charSection,
+        "data-chara",
+        charSelectAll,
+        selectedChars,
+      );
+      syncCandidateCheckboxes(
+        posterSection,
+        "data-poster",
+        posterSelectAll,
+        selectedPosters,
+      );
+      syncCandidateCheckboxes(
+        accSection,
+        "data-acc",
+        accSelectAll,
+        selectedAccs,
+      );
+
+      advancedLeaderIdx = importPlan.advanced.leaderIdx;
+      advancedLeaderPosterIdx = importPlan.advanced.leaderPosterIdx;
+      advancedLeaderPosition = importPlan.advanced.leaderPosition;
+      replaceAdvancedSlots(
+        advancedCharacterSlots,
+        importPlan.advanced.characterSlots,
+        -1,
+      );
+      replaceAdvancedSlots(
+        advancedCharacterSlotFixed,
+        importPlan.advanced.characterSlotFixed,
+        true,
+      );
+      replaceAdvancedSlots(
+        advancedPosterSlots,
+        importPlan.advanced.posterSlots,
+        -1,
+      );
+      replaceAdvancedSlots(
+        advancedPosterSlotBound,
+        importPlan.advanced.posterSlotBound,
+        false,
+      );
+      replaceAdvancedSlots(
+        advancedAccessorySlots,
+        importPlan.advanced.accessorySlots,
+        -1,
+      );
+
+      refreshLeaderOptions();
+      refreshAdvancedOptions();
+      updateEstimate();
+      saveState();
+
+      const notices = [];
+      const isCurrentPartyEmpty = [
+        ...party.characters,
+        ...party.posters,
+        ...party.accessories,
+      ].every((item) => !item);
+      if (isCurrentPartyEmpty) {
+        notices.push("当前编队为空，已清空候选池与进阶设置");
+      } else {
+        if (importPlan.importedItemCount === 0) {
+          notices.push("当前编队没有可导入的项目，已清空候选池与进阶设置");
+        }
+        if (importPlan.leaderStatus === "missing") {
+          notices.push("当前编队未设置有效队长，请在进阶设置中重新选择");
+        } else if (importPlan.leaderStatus === "skipped") {
+          notices.push("当前队长不在自动配队候选范围内，请在进阶设置中重新选择");
+        }
+        if (importPlan.skippedItems.length > 0) {
+          const skippedLabels = Array.from(
+            new Set(importPlan.skippedItems.map(formatSkippedImportItem)),
+          );
+          notices.push(
+            `以下项目不在自动配队候选范围内，已跳过：${skippedLabels.join("、")}`,
+          );
+        }
+      }
+      if (notices.length > 0) alert(notices.join("\n"));
+    };
+
     refreshLeaderOptions();
     if (savedLeaderId != null) {
       const li = characters.findIndex((c) => c.data.Id === savedLeaderId);
@@ -2704,6 +3046,7 @@ export default class PartyManager {
             characterSlots: [-1, -1, -1, -1, -1],
             characterSlotFixed: [true, true, true, true, true],
             posterSlots: [-1, -1, -1, -1, -1],
+            posterSlotBound: [false, false, false, false, false],
             accessorySlots: [-1, -1, -1, -1, -1],
           };
           if (autoPartyMode === "advanced") {
@@ -2719,6 +3062,7 @@ export default class PartyManager {
                 advancedPosterSlots,
                 selPosterIndexes,
               ),
+              posterSlotBound: advancedPosterSlotBound.slice(),
               accessorySlots: mapSlotIndexes(
                 advancedAccessorySlots,
                 selAccessoryIndexes,

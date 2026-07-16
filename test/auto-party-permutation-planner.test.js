@@ -90,7 +90,7 @@ describe("createAutoPartyPermutationPlan", () => {
     expect(plan.totalCombinations).toBe(24 * 24 * 120);
   });
 
-  test("a movable required character is aggregated into one group without attachments", () => {
+  test("a movable required character is aggregated with position-free required posters", () => {
     const plan = createAutoPartyPermutationPlan({
       characterCount: 6,
       posterCount: 5,
@@ -109,13 +109,16 @@ describe("createAutoPartyPermutationPlan", () => {
     expect(plan.groups).toHaveLength(1);
     const group = plan.groups[0];
     expect(group.characterPermutations).toHaveLength(96);
-    expect(group.posterPermutations).toHaveLength(1);
+    expect(group.posterPermutations).toHaveLength(24);
     expect(group.accessoryPermutations).toHaveLength(1);
     expect(group.characterPermutations.every((permutation) =>
       permutation.includes(1))).toBe(true);
     expect(new Set(group.characterPermutations.map((permutation) =>
       permutation.indexOf(1)))).toEqual(new Set([1, 2, 3, 4]));
-    expect(plan.totalCombinations).toBe(96);
+    expect(group.posterPermutations.every((permutation) =>
+      [0, 1, 2, 3].every((posterIdx) => permutation.includes(posterIdx))))
+      .toBe(true);
+    expect(plan.totalCombinations).toBe(96 * 24);
   });
 
   test("poster and accessory attachments follow a movable required character", () => {
@@ -130,15 +133,16 @@ describe("createAutoPartyPermutationPlan", () => {
         characterSlots: [-1, 1, -1, -1, -1],
         characterSlotFixed: [true, false, true, true, true],
         posterSlots: [-1, 1, -1, -1, 2],
+        posterSlotBound: [false, true, false, false, false],
         accessorySlots: [-1, 1, -1, 2, -1],
       }),
       characterBaseIds: [10, 20, 30, 40, 50],
       posterRestrictGroupIds: [10, 20, 30, 40, 50],
     });
 
-    expect(plan.groups).toHaveLength(2);
+    expect(plan.groups).toHaveLength(3);
     expect(plan.groups.map((group) =>
-      group.characterPermutations[0].indexOf(1))).toEqual([1, 2]);
+      group.characterPermutations[0].indexOf(1))).toEqual([1, 2, 4]);
     for (const group of plan.groups) {
       const characterPosition = group.characterPermutations[0].indexOf(1);
       expect(group.characterPermutations.every((permutation) =>
@@ -148,7 +152,7 @@ describe("createAutoPartyPermutationPlan", () => {
       expect(group.accessoryPermutations.every((permutation) =>
         permutation[characterPosition] === 1)).toBe(true);
     }
-    expect(plan.totalCombinations).toBe(144);
+    expect(plan.totalCombinations).toBe(648);
   });
 
   test("multiple movable rows keep each attachment with its own character", () => {
@@ -236,12 +240,15 @@ describe("createAutoPartyPermutationPlan", () => {
       characterBaseIds: [10, 20, 30, 40, 50],
     });
 
-    expect(plan.groups.map((group) => group.leaderPosition)).toEqual([2, 3, 4]);
-    expect(plan.groups.every((group) => group.combinationCount === 36)).toBe(
-      true,
+    expect(plan.groups.map((group) => group.leaderPosition)).toEqual([
+      1, 2, 3, 4,
+    ]);
+    expect(plan.groups.map((group) => group.offset)).toEqual(
+      plan.groups.map((_, index) =>
+        plan.groups
+          .slice(0, index)
+          .reduce((sum, group) => sum + group.combinationCount, 0)),
     );
-    expect(plan.groups.map((group) => group.offset)).toEqual([0, 36, 72]);
-    expect(plan.totalCombinations).toBe(108);
   });
 
   test("dynamic characters with the same primary base as the leader are filtered", () => {
@@ -261,7 +268,7 @@ describe("createAutoPartyPermutationPlan", () => {
     expect(plan.groups[0].characterPermutations).toHaveLength(24);
     expect(plan.groups[0].characterPermutations.every((permutation) =>
       !permutation.includes(1))).toBe(true);
-    expect(plan.totalCombinations).toBe(24);
+    expect(plan.totalCombinations).toBe(24 * 24);
   });
 
   test("dynamic posters with the leader poster restriction group are filtered", () => {
@@ -392,6 +399,24 @@ describe("createAutoPartyPermutationPlan", () => {
       }),
       "INVALID_CHARACTER_SLOT_FIXED_VALUE",
     );
+    expectConstraintCode(
+      () => createAutoPartyPermutationPlan({
+        ...common,
+        constraints: advancedConstraints({
+          posterSlotBound: [true, false],
+        }),
+      }),
+      "INVALID_POSTER_SLOT_BOUND",
+    );
+    expectConstraintCode(
+      () => createAutoPartyPermutationPlan({
+        ...common,
+        constraints: advancedConstraints({
+          posterSlotBound: [false, false, false, false, 1],
+        }),
+      }),
+      "INVALID_POSTER_SLOT_BOUND_VALUE",
+    );
   });
 
   test("movable rows report when their bound items have no legal destination", () => {
@@ -399,7 +424,7 @@ describe("createAutoPartyPermutationPlan", () => {
       () => createAutoPartyPermutationPlan({
         characterCount: 6,
         posterCount: 6,
-        accessoryCount: 5,
+        accessoryCount: 6,
         leaderIdx: 0,
         leaderPosterIdx: 0,
         constraints: advancedConstraints({
@@ -407,6 +432,8 @@ describe("createAutoPartyPermutationPlan", () => {
           characterSlots: [1, -1, -1, -1, -1],
           characterSlotFixed: [false, true, true, true, true],
           posterSlots: [1, 2, 3, 4, 5],
+          posterSlotBound: [true, false, false, false, false],
+          accessorySlots: [1, 2, 3, 4, 5],
         }),
         characterBaseIds: [10, 20, 30, 40, 50, 60],
         posterRestrictGroupIds: [10, 20, 30, 40, 50, 60],
@@ -428,6 +455,47 @@ describe("createAutoPartyPermutationPlan", () => {
         characterBaseIds: [10, 20, 30, 40, 50, 60],
       }),
       "NO_LEGAL_LEADER_POSITION",
+    );
+  });
+
+  test("an explicitly unbound poster is mandatory but may occupy any position", () => {
+    const plan = createAutoPartyPermutationPlan({
+      characterCount: 5,
+      posterCount: 6,
+      accessoryCount: 5,
+      leaderIdx: 0,
+      leaderPosterIdx: 0,
+      constraints: advancedConstraints({
+        leaderPosition: 0,
+        characterSlots: [-1, 1, 2, 3, 4],
+        posterSlots: [-1, 1, -1, -1, -1],
+        posterSlotBound: [false, false, false, false, false],
+        accessorySlots: [0, 1, 2, 3, 4],
+      }),
+      characterBaseIds: [10, 20, 30, 40, 50],
+    });
+
+    expect(plan.groups).toHaveLength(1);
+    expect(plan.groups[0].posterPermutations.every((permutation) =>
+      permutation.includes(1))).toBe(true);
+    expect(new Set(plan.groups[0].posterPermutations.map((permutation) =>
+      permutation.indexOf(1)))).toEqual(new Set([1, 2, 3, 4]));
+  });
+
+  test("a bound poster without a character target is rejected", () => {
+    expectConstraintCode(
+      () => createAutoPartyPermutationPlan({
+        characterCount: 5,
+        posterCount: 5,
+        accessoryCount: 5,
+        leaderIdx: 0,
+        constraints: advancedConstraints({
+          leaderPosition: 0,
+          posterSlots: [-1, 1, -1, -1, -1],
+          posterSlotBound: [false, true, false, false, false],
+        }),
+      }),
+      "POSTER_BINDING_TARGET_MISSING",
     );
   });
 });
@@ -487,14 +555,17 @@ describe("resolveAutoPartyCombination", () => {
     });
 
     const first = resolveAutoPartyCombination(plan, 0);
-    const secondGroup = resolveAutoPartyCombination(plan, 36);
-    const last = resolveAutoPartyCombination(plan, 107);
+    const secondGroup = resolveAutoPartyCombination(
+      plan,
+      plan.groups[1].offset,
+    );
+    const last = resolveAutoPartyCombination(plan, plan.totalCombinations - 1);
 
     expect(first.groupIdx).toBe(0);
-    expect(first.leaderPosition).toBe(2);
+    expect(first.leaderPosition).toBe(1);
     expect(secondGroup.groupIdx).toBe(1);
-    expect(secondGroup.leaderPosition).toBe(3);
-    expect(last.groupIdx).toBe(2);
+    expect(secondGroup.leaderPosition).toBe(2);
+    expect(last.groupIdx).toBe(3);
     expect(last.leaderPosition).toBe(4);
     for (const combination of [first, secondGroup, last]) {
       expect(combination.charPerm).toHaveLength(5);
@@ -504,6 +575,7 @@ describe("resolveAutoPartyCombination", () => {
       expect(combination.posterPerm[combination.leaderPosition]).toBe(0);
     }
     expect(() => resolveAutoPartyCombination(plan, -1)).toThrow(RangeError);
-    expect(() => resolveAutoPartyCombination(plan, 108)).toThrow(RangeError);
+    expect(() => resolveAutoPartyCombination(plan, plan.totalCombinations))
+      .toThrow(RangeError);
   });
 });

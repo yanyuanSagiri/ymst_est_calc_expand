@@ -76,6 +76,49 @@ function normalizeCharacterSlotFixed(values, characterSlots) {
   });
 }
 
+function normalizePosterSlotBound(
+  values,
+  posterSlots,
+  characterSlots,
+  leaderPosition,
+) {
+  const inferred = posterSlots.map((posterIdx, position) =>
+    posterIdx >= 0 &&
+    (characterSlots[position] >= 0 || leaderPosition === position),
+  );
+  if (values === undefined) return inferred;
+  if (!Array.isArray(values) || values.length !== PARTY_SIZE) {
+    constraintError(
+      "INVALID_POSTER_SLOT_BOUND",
+      `posterSlotBound must contain exactly ${PARTY_SIZE} entries`,
+      { values },
+    );
+  }
+
+  return values.map((value, position) => {
+    if (typeof value !== "boolean") {
+      constraintError(
+        "INVALID_POSTER_SLOT_BOUND_VALUE",
+        `posterSlotBound slot ${position} must be a boolean`,
+        { value, position },
+      );
+    }
+    if (posterSlots[position] === -1) return false;
+    if (
+      value &&
+      characterSlots[position] === -1 &&
+      leaderPosition !== position
+    ) {
+      constraintError(
+        "POSTER_BINDING_TARGET_MISSING",
+        `Bound poster at position ${position} has no character target`,
+        { position, posterIdx: posterSlots[position] },
+      );
+    }
+    return value;
+  });
+}
+
 function createCharacterKeys(characterCount, characterBaseIds) {
   return Array.from({ length: characterCount }, (_, index) => {
     const baseId = characterBaseIds[index];
@@ -161,7 +204,12 @@ function mergeForcedLeaderPosition(current, next, source) {
   return next;
 }
 
-function generateSlotPermutations(count, fixedSlots, uniqueKeys = null) {
+function generateSlotPermutations(
+  count,
+  fixedSlots,
+  uniqueKeys = null,
+  requiredIndices = [],
+) {
   const permutations = [];
   const current = fixedSlots.slice();
   const usedIndices = new Set();
@@ -175,10 +223,21 @@ function generateSlotPermutations(count, fixedSlots, uniqueKeys = null) {
       if (key !== null) usedKeys.add(key);
     }
   }
+  const pendingRequired = new Set(
+    requiredIndices.filter((index) => !usedIndices.has(index)),
+  );
+
+  const countOpenSlots = (startPosition) => {
+    let count = 0;
+    for (let position = startPosition; position < PARTY_SIZE; position++) {
+      if (current[position] === -1) count++;
+    }
+    return count;
+  };
 
   const visit = (position) => {
     if (position === PARTY_SIZE) {
-      permutations.push(current.slice());
+      if (pendingRequired.size === 0) permutations.push(current.slice());
       return;
     }
 
@@ -187,8 +246,13 @@ function generateSlotPermutations(count, fixedSlots, uniqueKeys = null) {
       return;
     }
 
+    const openSlots = countOpenSlots(position);
+    if (pendingRequired.size > openSlots) return;
+    const mustChooseRequired = pendingRequired.size === openSlots;
+
     for (let index = 0; index < count; index++) {
       if (usedIndices.has(index)) continue;
+      if (mustChooseRequired && !pendingRequired.has(index)) continue;
 
       const key = uniqueKeys ? uniqueKeys[index] : null;
       if (key !== null && usedKeys.has(key)) continue;
@@ -196,9 +260,11 @@ function generateSlotPermutations(count, fixedSlots, uniqueKeys = null) {
       current[position] = index;
       usedIndices.add(index);
       if (key !== null) usedKeys.add(key);
+      const wasRequired = pendingRequired.delete(index);
 
       visit(position + 1);
 
+      if (wasRequired) pendingRequired.add(index);
       if (key !== null) usedKeys.delete(key);
       usedIndices.delete(index);
       current[position] = -1;
@@ -226,6 +292,7 @@ function normalizeConstraints(constraints) {
       characterSlots: new Array(PARTY_SIZE).fill(-1),
       characterSlotFixed: new Array(PARTY_SIZE).fill(true),
       posterSlots: new Array(PARTY_SIZE).fill(-1),
+      posterSlotBound: new Array(PARTY_SIZE).fill(false),
       accessorySlots: new Array(PARTY_SIZE).fill(-1),
     };
   }
@@ -247,6 +314,10 @@ function normalizeConstraints(constraints) {
     constraints?.characterSlots,
     "character",
   );
+  const posterSlots = normalizeAdvancedSlots(
+    constraints?.posterSlots,
+    "poster",
+  );
 
   return {
     mode,
@@ -256,7 +327,13 @@ function normalizeConstraints(constraints) {
       constraints?.characterSlotFixed,
       characterSlots,
     ),
-    posterSlots: normalizeAdvancedSlots(constraints?.posterSlots, "poster"),
+    posterSlots,
+    posterSlotBound: normalizePosterSlotBound(
+      constraints?.posterSlotBound,
+      posterSlots,
+      characterSlots,
+      leaderPosition,
+    ),
     accessorySlots: normalizeAdvancedSlots(
       constraints?.accessorySlots,
       "accessory",
@@ -268,6 +345,7 @@ function splitAdvancedRows(normalizedConstraints) {
   const absoluteCharacterSlots = new Array(PARTY_SIZE).fill(-1);
   const absolutePosterSlots = normalizedConstraints.posterSlots.slice();
   const absoluteAccessorySlots = normalizedConstraints.accessorySlots.slice();
+  const floatingPosterIndices = [];
   const movableRows = [];
 
   for (let position = 0; position < PARTY_SIZE; position++) {
@@ -275,6 +353,13 @@ function splitAdvancedRows(normalizedConstraints) {
     const isMovable =
       characterIdx !== -1 &&
       normalizedConstraints.characterSlotFixed[position] === false;
+    const posterIdx = normalizedConstraints.posterSlots[position];
+    const posterBound = normalizedConstraints.posterSlotBound[position];
+
+    if (posterIdx !== -1 && !posterBound) {
+      absolutePosterSlots[position] = -1;
+      floatingPosterIndices.push(posterIdx);
+    }
 
     if (!isMovable) {
       absoluteCharacterSlots[position] = characterIdx;
@@ -284,7 +369,7 @@ function splitAdvancedRows(normalizedConstraints) {
     movableRows.push({
       sourcePosition: position,
       characterIdx,
-      posterIdx: normalizedConstraints.posterSlots[position],
+      posterIdx: posterBound ? posterIdx : -1,
       accessoryIdx: normalizedConstraints.accessorySlots[position],
     });
     absolutePosterSlots[position] = -1;
@@ -295,6 +380,7 @@ function splitAdvancedRows(normalizedConstraints) {
     absoluteCharacterSlots,
     absolutePosterSlots,
     absoluteAccessorySlots,
+    floatingPosterIndices,
     movableRows,
   };
 }
@@ -441,12 +527,24 @@ function slotSignature(slots) {
   return slots.join(",");
 }
 
-function getCachedPermutations(cache, count, fixedSlots, uniqueKeys = null) {
-  const signature = slotSignature(fixedSlots);
+function getCachedPermutations(
+  cache,
+  count,
+  fixedSlots,
+  uniqueKeys = null,
+  requiredIndices = [],
+) {
+  const requiredSignature = [...requiredIndices].sort((a, b) => a - b).join(",");
+  const signature = `${slotSignature(fixedSlots)}|required:${requiredSignature}`;
   if (!cache.has(signature)) {
     cache.set(
       signature,
-      generateSlotPermutations(count, fixedSlots, uniqueKeys),
+      generateSlotPermutations(
+        count,
+        fixedSlots,
+        uniqueKeys,
+        requiredIndices,
+      ),
     );
   }
   return cache.get(signature);
@@ -565,6 +663,7 @@ export function createAutoPartyPermutationPlan({
             posterCount,
             fixedPosters,
             posterRestrictionKeys,
+            rowLayout.floatingPosterIndices,
           ),
           accessoryPermutations: getCachedPermutations(
             accessoryPermutationCache,
